@@ -1,0 +1,8 @@
+{
+  "tokenEnv": "TEACHER_ACCESS_TOKEN",
+  "outputDir": "../memory-bank/网站同步",
+  "studentIds": [
+    "REPLACE_WITH_STUDENT_A_PROFILE_UUID",
+    "REPLACE_WITH_STUDENT_B_PROFILE_UUID"
+  ]
+}

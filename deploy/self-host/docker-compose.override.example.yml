@@ -1,0 +1,19 @@
+# Place next to the official Supabase self-hosting docker-compose.yml.
+# Keep service ports bound to 127.0.0.1; expose only HTTPS via Caddy/Nginx.
+
+services:
+  kong:
+    ports:
+      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:8443:8443"
+
+  studio:
+    ports:
+      - "127.0.0.1:3000:3000"
+
+  db:
+    ports: []
+
+  functions:
+    volumes:
+      - /opt/teaching-loop/repo/supabase/functions:/home/deno/functions:ro

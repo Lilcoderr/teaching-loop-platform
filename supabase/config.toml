@@ -1,0 +1,39 @@
+project_id = "teaching-loop-platform"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+major_version = 15
+
+[studio]
+enabled = true
+port = 54323
+
+[inbucket]
+enabled = true
+port = 54324
+
+[storage]
+enabled = true
+file_size_limit = "25MiB"
+
+[auth]
+enabled = true
+site_url = "https://lilcoderr.github.io/teaching-loop-platform/"
+additional_redirect_urls = ["http://localhost:5173", "http://127.0.0.1:5173", "http://127.0.0.1:4173", "https://lilcoderr.github.io/teaching-loop-platform/"]
+enable_signup = false
+
+[functions.username-login]
+verify_jwt = false
+
+[functions.knowledge-ingest]
+verify_jwt = false
+
+[functions.question-bank-import]
+verify_jwt = false

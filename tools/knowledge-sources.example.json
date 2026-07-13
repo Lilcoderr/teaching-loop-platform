@@ -1,0 +1,22 @@
+{
+  "tokenEnv": "KNOWLEDGE_SYNC_TOKEN",
+  "stateFile": ".knowledge-sync-state.local.json",
+  "batchSize": 20,
+  "maxChunkCharacters": 3500,
+  "maxChunksPerDocument": 250,
+  "sources": [
+    {
+      "studentId": "REPLACE_WITH_STUDENT_A_PROFILE_UUID",
+      "subject": "math",
+      "root": "../学生A/数学",
+      "pathPrefix": "学生A/数学",
+      "exclude": ["**/打印缓存/**"]
+    },
+    {
+      "studentId": "REPLACE_WITH_STUDENT_B_PROFILE_UUID",
+      "subject": "math",
+      "root": "../学生B/数学",
+      "pathPrefix": "学生B/数学"
+    }
+  ]
+}

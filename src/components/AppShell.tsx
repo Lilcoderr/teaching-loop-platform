@@ -1,0 +1,147 @@
+import {
+  BarChart3,
+  BookOpenCheck,
+  Bot,
+  ClipboardCheck,
+  FileClock,
+  FileQuestion,
+  FileUp,
+  GraduationCap,
+  Home,
+  Library,
+  KeyRound,
+  LogOut,
+  MessageSquare,
+  NotebookTabs,
+  Settings,
+  ShieldCheck,
+  Users,
+} from 'lucide-react'
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { type FormEvent, useState } from 'react'
+import { usePlatform } from '../context/PlatformContext'
+import type { Role } from '../types/domain'
+import { Avatar } from './Avatar'
+import { Brand } from './Brand'
+import { Modal } from './Modal'
+
+const roleLabels: Record<Role, string> = { teacher: '教师端', student: '学生端', parent: '家长端' }
+
+const navByRole = {
+  teacher: [
+    { to: '/teacher', label: '概览', icon: BarChart3, end: true },
+    { to: '/teacher/review', label: '作业批改', icon: ClipboardCheck },
+    { to: '/teacher/students', label: '学生', icon: GraduationCap },
+    { to: '/teacher/question-bank', label: '学生错题库', icon: BookOpenCheck },
+    { to: '/teacher/knowledge', label: '学习资料', icon: Library },
+    { to: '/teacher/reports', label: '周报', icon: FileClock },
+    { to: '/teacher/accounts', label: '账号', icon: Users },
+    { to: '/teacher/settings', label: '设置', icon: Settings },
+  ],
+  student: [
+    { to: '/student', label: '今日', icon: Home, end: true },
+    { to: '/student/upload', label: '交作业', icon: FileUp },
+    { to: '/student/wrong-upload', label: '传错题', icon: FileQuestion },
+    { to: '/student/resources', label: '学习资料', icon: Library },
+    { to: '/student/mistakes', label: '错题本', icon: NotebookTabs },
+    { to: '/student/tutor', label: 'AI 答疑', icon: Bot },
+    { to: '/student/messages', label: '留言', icon: MessageSquare },
+  ],
+  parent: [{ to: '/parent', label: '学习周报', icon: BookOpenCheck, end: true }],
+} as const
+
+export function AppShell() {
+  const { state, demoMode, switchDemoUser, signOut } = usePlatform()
+  const navigate = useNavigate()
+  const location = useLocation()
+  const role = state.currentUser.role
+  const items = navByRole[role]
+
+  const changeRole = (nextRole: Role) => {
+    switchDemoUser(nextRole)
+    navigate(nextRole === 'teacher' ? '/teacher' : nextRole === 'student' ? '/student' : '/parent')
+  }
+
+  return (
+    <div className="app-layout">
+      <aside className="sidebar">
+        <Brand />
+        <div className="sidebar-role">
+          <Avatar name={state.currentUser.displayName} color={state.currentUser.avatarColor} />
+          <div><strong>{state.currentUser.displayName}</strong><small>{roleLabels[role]}</small></div>
+        </div>
+        <nav aria-label="主导航">
+          {items.map(({ to, label, icon: Icon, ...rest }) => (
+            <NavLink key={to} to={to} end={'end' in rest ? rest.end : false} className={({ isActive }) => (isActive ? 'active' : '')}>
+              <Icon size={18} /><span>{label}</span>
+            </NavLink>
+          ))}
+        </nav>
+        <div className="sidebar-bottom">
+          {demoMode && (
+            <label className="demo-role-select">
+              <span><ShieldCheck size={15} />演示视角</span>
+              <select value={role} onChange={(event) => changeRole(event.target.value as Role)}>
+                <option value="teacher">教师</option>
+                <option value="student">学生</option>
+                <option value="parent">家长</option>
+              </select>
+            </label>
+          )}
+          <button type="button" className="sidebar-signout" onClick={() => void signOut()}><LogOut size={17} />退出登录</button>
+        </div>
+      </aside>
+
+      <div className="main-column">
+        <header className="mobile-header">
+          <Brand compact />
+          <div>
+            {demoMode && <span className="demo-badge">演示</span>}
+            <Avatar name={state.currentUser.displayName} color={state.currentUser.avatarColor} size="sm" />
+            <button type="button" className="icon-button mobile-signout" onClick={() => void signOut()} title="退出登录"><LogOut size={17} /></button>
+          </div>
+        </header>
+        <main key={location.pathname} className="main-content"><Outlet /></main>
+      </div>
+
+      <nav className="mobile-nav" aria-label="移动端导航">
+        {items.map(({ to, label, icon: Icon, ...rest }) => (
+          <NavLink key={to} to={to} end={'end' in rest ? rest.end : false} className={({ isActive }) => (isActive ? 'active' : '')}>
+            <Icon size={20} /><span>{label}</span>
+          </NavLink>
+        ))}
+      </nav>
+      <PasswordGate />
+    </div>
+  )
+}
+
+function PasswordGate() {
+  const { state, changePassword } = usePlatform()
+  const [password, setPassword] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault()
+    setError('')
+    if (password !== confirm) return setError('两次输入的密码不一致')
+    setBusy(true)
+    try { await changePassword(password); setPassword(''); setConfirm('') }
+    catch (reason) { setError(reason instanceof Error ? reason.message : '密码更新失败') }
+    finally { setBusy(false) }
+  }
+
+  return (
+    <Modal open={Boolean(state.currentUser.mustChangePassword)} title="设置新密码" onClose={() => undefined} dismissible={false}>
+      <form className="password-gate" onSubmit={submit}>
+        <div className="password-gate-mark"><KeyRound size={20} /><div><strong>首次登录需要修改密码</strong><span>新密码至少 10 位，不要与其他网站共用。</span></div></div>
+        <label className="field"><span>新密码</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" /></label>
+        <label className="field"><span>再次输入</span><input type="password" value={confirm} onChange={(event) => setConfirm(event.target.value)} autoComplete="new-password" /></label>
+        {error && <p className="form-error">{error}</p>}
+        <button className="button primary wide" type="submit" disabled={busy || password.length < 10}><ShieldCheck size={16} />{busy ? '正在更新' : '确认新密码'}</button>
+      </form>
+    </Modal>
+  )
+}

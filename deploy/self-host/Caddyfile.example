@@ -1,0 +1,16 @@
+app.example.com {
+  root * /opt/teaching-loop/app
+  encode zstd gzip
+  try_files {path} /index.html
+  file_server
+}
+
+api.example.com {
+  encode zstd gzip
+  reverse_proxy 127.0.0.1:8000
+}
+
+studio.example.com {
+  encode zstd gzip
+  reverse_proxy 127.0.0.1:3000
+}

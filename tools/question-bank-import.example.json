@@ -1,0 +1,12 @@
+{
+  "tokenEnv": "KNOWLEDGE_SYNC_TOKEN",
+  "batchSize": 50,
+  "sources": [
+    {
+      "root": "../题库/可检索题库/数学",
+      "subject": "math",
+      "pathPrefix": "题库/可检索题库/数学",
+      "exclude": ["README.md", "索引.md"]
+    }
+  ]
+}
