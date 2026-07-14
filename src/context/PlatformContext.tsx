@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react'
 import { demoParent, demoState, demoStudents, demoTeacher } from '../data/demo'
@@ -125,49 +126,81 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<PlatformState>(() => (runtime.demoMode ? loadDemoState() : emptyPlatformState()))
   const [loading, setLoading] = useState(!runtime.demoMode)
   const [authenticated, setAuthenticated] = useState(runtime.demoMode)
+  const loadingRef = useRef(!runtime.demoMode)
+  const authEpoch = useRef(0)
+  const latestRefreshRequest = useRef(0)
+  const authRefresh = useRef<{ epoch: number; promise: Promise<void> } | null>(null)
   const [activeStudentId, setActiveStudentId] = useState<string | undefined>(() => {
     const user = runtime.demoMode ? loadDemoState().currentUser : undefined
     return user?.role === 'student' ? user.id : demoStudents[0].id
   })
 
-  const refresh = useCallback(async () => {
-    if (runtime.demoMode) return
-    setLoading(true)
-    setAuthenticated(false)
+  const refresh = useCallback(async (options: { showLoading?: boolean; rethrow?: boolean } = {}) => {
+    if (runtime.demoMode) return Promise.resolve()
+    const requestId = ++latestRefreshRequest.current
+    const requestEpoch = authEpoch.current
+    if (options.showLoading) {
+      loadingRef.current = true
+      setLoading(true)
+    }
     try {
       const next = await invokeFunction<PlatformState>('bootstrap')
-      setState(next)
-      setAuthenticated(true)
-      setActiveStudentId((current) => {
-        if (next.currentUser.role === 'student') return next.currentUser.id
-        if (current && next.students.some((student) => student.id === current)) return current
-        return next.students[0]?.id
-      })
+      if (requestEpoch === authEpoch.current && requestId === latestRefreshRequest.current) {
+        setState(next)
+        setAuthenticated(true)
+        setActiveStudentId((current) => {
+          if (next.currentUser.role === 'student') return next.currentUser.id
+          if (current && next.students.some((student) => student.id === current)) return current
+          return next.students[0]?.id
+        })
+      }
     } catch (error) {
       const session = await supabase?.auth.getSession()
-      setState(emptyPlatformState())
-      setActiveStudentId(undefined)
-      setAuthenticated(false)
-      if (session?.data.session) console.error('加载平台数据失败', error)
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    if (runtime.demoMode) return
-    void refresh()
-    const subscription = supabase?.auth.onAuthStateChange((event) => {
-      if (event === 'SIGNED_OUT') {
+      if (requestEpoch === authEpoch.current && requestId === latestRefreshRequest.current) {
         setState(emptyPlatformState())
         setActiveStudentId(undefined)
         setAuthenticated(false)
+        if (session?.data.session) console.error('加载平台数据失败', error)
+      }
+      if (options.rethrow) throw error
+    } finally {
+      if (options.showLoading && requestEpoch === authEpoch.current) {
+        loadingRef.current = false
         setLoading(false)
       }
-      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') void refresh()
+    }
+  }, [])
+
+  const refreshAfterSignIn = useCallback((showLoading = false) => {
+    const epoch = authEpoch.current
+    if (authRefresh.current?.epoch === epoch) return authRefresh.current.promise
+    const promise = refresh({ showLoading, rethrow: true })
+    authRefresh.current = { epoch, promise }
+    void promise.catch(() => undefined)
+    return promise
+  }, [refresh])
+
+  useEffect(() => {
+    if (runtime.demoMode) return
+    void refresh({ showLoading: true })
+    const subscription = supabase?.auth.onAuthStateChange((event) => {
+      if (event === 'SIGNED_OUT') {
+        authEpoch.current += 1
+        authRefresh.current = null
+        setState(emptyPlatformState())
+        setActiveStudentId(undefined)
+        setAuthenticated(false)
+        loadingRef.current = false
+        setLoading(false)
+      }
+      if (event === 'SIGNED_IN') {
+        authEpoch.current += 1
+        authRefresh.current = null
+        void refreshAfterSignIn(loadingRef.current).catch(() => undefined)
+      }
     })
     return () => subscription?.data.subscription.unsubscribe()
-  }, [refresh])
+  }, [refresh, refreshAfterSignIn])
 
   useEffect(() => {
     if (!runtime.demoMode) return
@@ -193,8 +226,6 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
     }
 
     if (!supabase) throw new Error('Supabase 尚未配置')
-    setState(emptyPlatformState())
-    setAuthenticated(false)
     if (username.includes('@')) {
       const { error } = await supabase.auth.signInWithPassword({ email: username, password })
       if (error) throw error
@@ -209,8 +240,8 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
       })
       if (error) throw error
     }
-    await refresh()
-  }, [refresh, state.accounts])
+    await refreshAfterSignIn()
+  }, [refreshAfterSignIn, state.accounts])
 
   const signOut = useCallback(async () => {
     if (runtime.demoMode) {

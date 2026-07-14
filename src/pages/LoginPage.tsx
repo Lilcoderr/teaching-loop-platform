@@ -7,8 +7,8 @@ import { usePlatform } from '../context/PlatformContext'
 export function LoginPage() {
   const { signIn, demoMode, switchDemoUser } = usePlatform()
   const navigate = useNavigate()
-  const [username, setUsername] = useState('teacher')
-  const [password, setPassword] = useState('demo')
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -19,7 +19,7 @@ export function LoginPage() {
     setError('')
     try {
       await signIn(username, password)
-      navigate('/teacher')
+      if (demoMode) navigate('/', { replace: true })
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '登录失败')
     } finally {
@@ -43,20 +43,20 @@ export function LoginPage() {
         <form onSubmit={submit}>
           <label className="field">
             <span>账号</span>
-            <div className="input-with-icon"><UserRound size={18} /><input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" /></div>
+            <div className="input-with-icon"><UserRound size={18} /><input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" placeholder="用户名" /></div>
           </label>
           <label className="field">
             <span>密码</span>
             <div className="input-with-icon">
               <LockKeyhole size={18} />
-              <input type={showPassword ? 'text' : 'password'} value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" />
+              <input type={showPassword ? 'text' : 'password'} value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" placeholder="密码" />
               <button type="button" className="input-action" onClick={() => setShowPassword((value) => !value)} title={showPassword ? '隐藏密码' : '显示密码'}>
                 {showPassword ? <EyeOff size={17} /> : <Eye size={17} />}
               </button>
             </div>
           </label>
           {error && <p className="form-error">{error}</p>}
-          <button className="button primary wide" type="submit" disabled={busy}>
+          <button className="button primary wide" type="submit" disabled={busy || !username.trim() || !password}>
             {busy ? <LoaderCircle className="spin" size={18} /> : <ArrowRight size={18} />}登录
           </button>
         </form>

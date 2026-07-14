@@ -28,4 +28,14 @@ describe('application shell', () => {
 
     expect(await screen.findByRole('heading', { name: '教学概览' })).toBeInTheDocument()
   })
+
+  it('keeps the login form available in local demo mode', async () => {
+    render(
+      <MemoryRouter initialEntries={['/login']}>
+        <PlatformProvider><App /></PlatformProvider>
+      </MemoryRouter>,
+    )
+
+    expect(await screen.findByRole('heading', { name: '登录学习工作台' })).toBeInTheDocument()
+  })
 })

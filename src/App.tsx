@@ -30,12 +30,12 @@ function RoleGate({ role }: { role: 'teacher' | 'student' | 'parent' }) {
 }
 
 export default function App() {
-  const { loading, authenticated } = usePlatform()
+  const { loading, authenticated, demoMode } = usePlatform()
   if (loading) return <div className="app-loading"><LoaderCircle className="spin" size={28} /><span>正在载入工作台</span></div>
 
   return (
     <Routes>
-      <Route path="/login" element={<LoginPage />} />
+      <Route path="/login" element={authenticated && !demoMode ? <HomeRedirect /> : <LoginPage />} />
       <Route element={authenticated ? <AppShell /> : <Navigate replace to="/login" />}>
         <Route index element={<HomeRedirect />} />
         <Route element={<RoleGate role="teacher" />}>

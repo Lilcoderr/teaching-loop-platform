@@ -529,6 +529,7 @@ p {
 
 .input-with-icon > svg { position: absolute; left: 11px; color: var(--ink-faint); pointer-events: none; }
 .input-with-icon input { padding-left: 39px; padding-right: 42px; }
+.input-with-icon input::placeholder { color: var(--ink-faint); opacity: 1; }
 .input-action { position: absolute; right: 5px; width: 32px; height: 32px; display: grid; place-items: center; border: 0; background: transparent; color: var(--ink-faint); cursor: pointer; }
 
 .empty-state {
