@@ -529,6 +529,7 @@ p {
 
 .input-with-icon > svg { position: absolute; left: 11px; color: var(--ink-faint); pointer-events: none; }
 .input-with-icon input { padding-left: 39px; padding-right: 42px; }
+.input-with-icon select { width: 100%; padding-left: 39px; }
 .input-with-icon input::placeholder { color: var(--ink-faint); opacity: 1; }
 .input-action { position: absolute; right: 5px; width: 32px; height: 32px; display: grid; place-items: center; border: 0; background: transparent; color: var(--ink-faint); cursor: pointer; }
 
@@ -624,6 +625,12 @@ p {
 .login-heading p { margin-bottom: 28px; color: var(--ink-faint); font-size: 13px; }
 .login-panel form { display: flex; flex-direction: column; gap: 17px; }
 .login-panel form .button { margin-top: 4px; }
+.login-role-picker { min-width: 0; padding: 0; border: 0; }
+.login-role-picker legend { margin-bottom: 7px; color: var(--ink-soft); font-size: 12px; font-weight: 700; }
+.login-role-picker .segmented-control { width: 100%; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.login-role-picker button { display: flex; align-items: center; justify-content: center; gap: 6px; }
+.account-load-error { margin-top: -7px; display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--red); font-size: 12px; }
+.account-load-error button { padding: 3px 0; border: 0; background: transparent; color: var(--teal-dark); font-size: 12px; font-weight: 700; cursor: pointer; }
 
 .demo-entry { margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--border); }
 .demo-entry > span { display: block; margin-bottom: 10px; color: var(--ink-faint); font-size: 11px; font-weight: 700; }
@@ -852,10 +859,17 @@ p {
 .hint-levels button { min-height: 29px; padding: 0 10px; flex: 0 0 auto; border: 1px solid var(--border); border-radius: 5px; background: var(--surface); color: var(--ink-faint); font-size: 10px; font-weight: 700; cursor: pointer; }
 .hint-levels button.active { border-color: var(--teal); background: var(--teal-soft); color: var(--teal-dark); }
 .attempt-input { width: 100%; min-height: 52px; margin-bottom: 7px; padding: 8px 10px; border: 1px solid #fcd34d; border-radius: 6px; background: #fffbeb; outline: none; resize: vertical; font-size: 11px; }
-.composer-row { display: grid; grid-template-columns: minmax(0, 1fr) 40px; gap: 8px; align-items: end; }
+.composer-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end; }
 .composer-row textarea { width: 100%; height: 68px; padding: 10px 11px; border: 1px solid var(--border-strong); border-radius: 6px; outline: none; resize: none; font-size: 12px; line-height: 1.5; }
 .composer-row textarea:focus { border-color: var(--teal); box-shadow: 0 0 0 3px rgba(15,118,110,0.1); }
 .send-button { width: 40px; height: 40px; border-color: var(--teal); background: var(--teal); color: #fff; }
+.tutor-composer-actions { display: flex; gap: 6px; align-items: center; }
+.tutor-image-button { width: 40px; height: 40px; color: var(--teal-dark); background: var(--teal-soft); }
+.tutor-image-preview { min-height: 60px; margin-bottom: 8px; padding: 7px 9px; display: grid; grid-template-columns: 48px minmax(0, 1fr) 34px; gap: 9px; align-items: center; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); }
+.tutor-image-preview img { width: 48px; height: 48px; object-fit: cover; border-radius: 4px; background: var(--surface-muted); }
+.tutor-image-preview > div { min-width: 0; display: flex; flex-direction: column; }
+.tutor-image-preview strong { overflow: hidden; color: var(--ink); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.tutor-image-preview small { margin-top: 3px; color: var(--ink-faint); font-size: 10px; }
 .chat-composer > small { margin-top: 5px; display: flex; align-items: center; gap: 4px; color: var(--ink-faint); font-size: 9px; }
 
 .message-panel { height: calc(100vh - 140px); display: grid; grid-template-rows: minmax(0, 1fr) auto; overflow: hidden; }
@@ -1076,6 +1090,8 @@ p {
 .quick-action-grid.four-actions a { min-height: 74px; }
 .student-home-grid { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: 14px; }
 .evaluation-body { padding: 16px; display: grid; gap: 15px; }
+.daily-evaluation-list .evaluation-body + .evaluation-body { border-top: 1px solid var(--border); }
+.evaluation-body > .evaluation-subject { width: fit-content; padding: 4px 8px; border-radius: 4px; background: var(--blue-soft); color: var(--blue); font-size: 12px; }
 .evaluation-body > p { margin: 0; color: var(--ink); font-size: 14px; line-height: 1.8; }
 .evaluation-body > div { display: grid; gap: 6px; }
 .evaluation-body strong { font-size: 10px; color: var(--ink-faint); }
@@ -1614,9 +1630,22 @@ html[data-ui-theme="data"] .main-content small { font-size: 13px; }
 html[data-ui-theme="data"] :is(.list-row strong, .grading-row-main > strong, .resource-main strong, .student-question-main h3, .review-inbox-item p) { font-size: 17px; }
 html[data-ui-theme="data"] :is(.list-row p, .grading-row-main > p, .resource-main p, .resource-main blockquote, .student-question-note p) { font-size: 15px; }
 html[data-ui-theme="data"] .evaluation-body > p { font-size: 17px; }
+html[data-ui-theme="data"] .evaluation-body > .evaluation-subject { font-size: 15px; }
 html[data-ui-theme="data"] .evaluation-point { padding: 11px 13px; font-size: 15px; }
 html[data-ui-theme="data"] .grading-row { padding: 17px 19px; }
 html[data-ui-theme="data"] .sidebar nav a { min-height: 46px; font-size: 15px; }
+html[data-ui-theme="data"] .login-heading h1 { font-size: 28px; }
+html[data-ui-theme="data"] .login-heading p,
+html[data-ui-theme="data"] .login-role-picker legend,
+html[data-ui-theme="data"] .login-panel .field > span { font-size: 15px; }
+html[data-ui-theme="data"] .login-role-picker button,
+html[data-ui-theme="data"] .login-panel input,
+html[data-ui-theme="data"] .login-panel select { min-height: 44px; font-size: 16px; }
+html[data-ui-theme="data"] .account-load-error,
+html[data-ui-theme="data"] .account-load-error button { font-size: 14px; }
+html[data-ui-theme="data"] .hint-levels button { min-height: 38px; padding-inline: 14px; font-size: 15px; }
+html[data-ui-theme="data"] .tutor-image-preview strong { font-size: 15px; }
+html[data-ui-theme="data"] .tutor-composer-actions .icon-button { width: 44px; height: 44px; }
 
 @media (max-width: 760px) {
   html[data-ui-theme="data"] .app-layout { display: block; }

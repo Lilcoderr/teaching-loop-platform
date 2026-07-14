@@ -41,12 +41,15 @@ Deno.serve(async (request) => {
       if (!teacherHint && !teacherEvaluation) {
         throw new HttpError(400, 'A hint or evaluation is required', 'feedback_required')
       }
+      const { data: existingFeedback, error: existingError } = await db.from('wrong_submission_feedback')
+        .select('teacher_hint,teacher_evaluation').eq('submission_id', submission.id).maybeSingle()
+      if (existingError) throw existingError
       const { data: feedback, error } = await db.from('wrong_submission_feedback').upsert({
         submission_id: submission.id,
         student_id: submission.student_id,
         teacher_id: actor.id,
-        teacher_hint: teacherHint,
-        teacher_evaluation: teacherEvaluation,
+        teacher_hint: teacherHint || existingFeedback?.teacher_hint || '',
+        teacher_evaluation: teacherEvaluation || existingFeedback?.teacher_evaluation || '',
       }, { onConflict: 'submission_id' }).select('*').single()
       if (error) throw error
       await db.from('audit_logs').insert({
@@ -101,14 +104,26 @@ Deno.serve(async (request) => {
       return json(request, { ok: true, grade })
     }
     if (action === 'approve') {
+      const { data: submission, error: submissionError } = await db.from('submissions')
+        .select('id,mode').eq('id', submissionId).maybeSingle()
+      if (submissionError) throw submissionError
+      if (!submission) throw new HttpError(404, '提交不存在', 'not_found')
+      if (submission.mode !== 'assignment') {
+        throw new HttpError(400, '整份作业才能使用确认批改；错题或不会题请使用归档操作', 'invalid_submission_mode')
+      }
       const tags = Array.isArray(body.tags)
         ? body.tags.filter((tag): tag is string => typeof tag === 'string' && VALID_TAGS.has(tag)) : []
+      const confirmedWrongNumbers = Array.isArray(body.confirmedWrongNumbers)
+        ? [...new Set(body.confirmedWrongNumbers.filter((value): value is string => typeof value === 'string')
+          .map((value) => value.trim().slice(0, 40)).filter(Boolean))].slice(0, 50)
+        : []
       const teacherNote = typeof body.teacherNote === 'string' ? body.teacherNote.trim().slice(0, 4000) : ''
       const { data, error } = await db.rpc('approve_submission', {
         target_submission_id: submissionId,
         reviewer_id: actor.id,
         approved_tags: tags,
         reviewer_note: teacherNote,
+        confirmed_wrong_numbers: confirmedWrongNumbers,
       })
       if (error) throw error
       return json(request, { ok: true, ...data })

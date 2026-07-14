@@ -56,6 +56,7 @@ export function AppShell() {
   const location = useLocation()
   const role = state.currentUser.role
   const items = navByRole[role]
+  const [passwordOpen, setPasswordOpen] = useState(false)
 
   const changeRole = (nextRole: Role) => {
     switchDemoUser(nextRole)
@@ -88,6 +89,7 @@ export function AppShell() {
               </select>
             </label>
           )}
+          <button type="button" className="sidebar-signout" onClick={() => setPasswordOpen(true)}><KeyRound size={17} />修改密码</button>
           <button type="button" className="sidebar-signout" onClick={() => void signOut()}><LogOut size={17} />退出登录</button>
         </div>
       </aside>
@@ -98,6 +100,7 @@ export function AppShell() {
           <div>
             {demoMode && <span className="demo-badge">演示</span>}
             <Avatar name={state.currentUser.displayName} color={state.currentUser.avatarColor} size="sm" />
+            <button type="button" className="icon-button" onClick={() => setPasswordOpen(true)} title="修改密码"><KeyRound size={17} /></button>
             <button type="button" className="icon-button mobile-signout" onClick={() => void signOut()} title="退出登录"><LogOut size={17} /></button>
           </div>
         </header>
@@ -111,37 +114,67 @@ export function AppShell() {
           </NavLink>
         ))}
       </nav>
+      {passwordOpen && <ChangePasswordDialog onClose={() => setPasswordOpen(false)} />}
       <PasswordGate />
     </div>
   )
 }
 
-function PasswordGate() {
-  const { state, changePassword } = usePlatform()
+function PasswordForm({ onSuccess }: { onSuccess?: () => void }) {
+  const { changePassword } = usePlatform()
+  const [currentPassword, setCurrentPassword] = useState('')
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
   const [error, setError] = useState('')
+  const [success, setSuccess] = useState('')
   const [busy, setBusy] = useState(false)
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     setError('')
+    setSuccess('')
+    if (!currentPassword) return setError('请输入当前密码')
+    if (password.length < 10) return setError('新密码至少 10 位')
+    if (password === currentPassword) return setError('新密码不能与当前密码相同')
     if (password !== confirm) return setError('两次输入的密码不一致')
     setBusy(true)
-    try { await changePassword(password); setPassword(''); setConfirm('') }
-    catch (reason) { setError(reason instanceof Error ? reason.message : '密码更新失败') }
-    finally { setBusy(false) }
+    try {
+      await changePassword(currentPassword, password)
+      setCurrentPassword('')
+      setPassword('')
+      setConfirm('')
+      setSuccess('密码已修改，请在下次登录时使用新密码')
+      onSuccess?.()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '密码更新失败')
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (
+    <form className="password-gate" onSubmit={submit}>
+      <div className="password-gate-mark"><KeyRound size={20} /><div><strong>设置仅自己知道的新密码</strong><span>新密码至少 10 位，不要与其他网站共用。</span></div></div>
+      <label className="field"><span>当前密码</span><input type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} autoComplete="current-password" /></label>
+      <label className="field"><span>新密码</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" /></label>
+      <label className="field"><span>再次输入新密码</span><input type="password" value={confirm} onChange={(event) => setConfirm(event.target.value)} autoComplete="new-password" /></label>
+      {error && <p className="form-error">{error}</p>}
+      {success && <p className="form-success">{success}</p>}
+      <button className="button primary wide" type="submit" disabled={busy || password.length < 10}><ShieldCheck size={16} />{busy ? '正在更新' : '确认新密码'}</button>
+    </form>
+  )
+}
+
+function ChangePasswordDialog({ onClose }: { onClose: () => void }) {
+  return <Modal open title="修改密码" onClose={onClose}><PasswordForm /></Modal>
+}
+
+function PasswordGate() {
+  const { state } = usePlatform()
+
+  return (
     <Modal open={Boolean(state.currentUser.mustChangePassword)} title="设置新密码" onClose={() => undefined} dismissible={false}>
-      <form className="password-gate" onSubmit={submit}>
-        <div className="password-gate-mark"><KeyRound size={20} /><div><strong>首次登录需要修改密码</strong><span>新密码至少 10 位，不要与其他网站共用。</span></div></div>
-        <label className="field"><span>新密码</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" /></label>
-        <label className="field"><span>再次输入</span><input type="password" value={confirm} onChange={(event) => setConfirm(event.target.value)} autoComplete="new-password" /></label>
-        {error && <p className="form-error">{error}</p>}
-        <button className="button primary wide" type="submit" disabled={busy || password.length < 10}><ShieldCheck size={16} />{busy ? '正在更新' : '确认新密码'}</button>
-      </form>
+      <PasswordForm />
     </Modal>
   )
 }

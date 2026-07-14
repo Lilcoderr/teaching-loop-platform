@@ -9,6 +9,7 @@ export function MessagesPage() {
   const { state, sendMessage } = usePlatform()
   const [body, setBody] = useState('')
   const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
   const bottomRef = useRef<HTMLDivElement>(null)
   const studentId = state.currentUser.id
   const messages = state.messages.filter((message) => message.studentId === studentId)
@@ -16,11 +17,14 @@ export function MessagesPage() {
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
-    if (!body.trim()) return
+    if (!body.trim() || busy) return
     setBusy(true)
+    setError('')
     try {
       await sendMessage(studentId, body)
       setBody('')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '留言发送失败，请稍后重试')
     } finally {
       setBusy(false)
     }
@@ -40,8 +44,9 @@ export function MessagesPage() {
           <div ref={bottomRef} />
         </div>
         <form className="message-composer" onSubmit={submit}>
-          <textarea value={body} onChange={(event) => setBody(event.target.value)} placeholder="写下问题或反馈……" />
+          <textarea value={body} onChange={(event) => { setBody(event.target.value); setError('') }} placeholder="写下问题或反馈……" disabled={busy} />
           <button className="button primary" type="submit" disabled={!body.trim() || busy}><Send size={16} />发送</button>
+          {error && <p className="form-error" role="alert">{error}</p>}
         </form>
       </section>
     </>

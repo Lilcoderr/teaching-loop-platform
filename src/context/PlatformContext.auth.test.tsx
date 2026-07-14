@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -17,8 +17,9 @@ const authMock = vi.hoisted(() => ({
 }))
 
 const invokeFunctionMock = vi.hoisted(() => vi.fn())
+const loginAccounts = [{ id: '11111111-1111-4111-8111-111111111111', role: 'teacher', label: '方老师' }]
 
-function teacherState(username = 'waynechen') {
+function teacherState(username = 'teacher-demo') {
   const state = structuredClone(demoState)
   state.currentUser = { ...state.currentUser, username }
   return state
@@ -74,15 +75,15 @@ describe('production authentication flow', () => {
   })
 
   it('keeps the login form mounted while one shared bootstrap finishes', async () => {
-    const user = userEvent.setup()
     let bootstrapCalls = 0
     let resolveAuthenticatedBootstrap: ((state: PlatformState) => void) | undefined
     const authenticatedBootstrap = new Promise<PlatformState>((resolve) => {
       resolveAuthenticatedBootstrap = resolve
     })
 
-    invokeFunctionMock.mockImplementation((name: string) => {
+    invokeFunctionMock.mockImplementation((name: string, body?: { action?: string }) => {
       if (name === 'username-login') {
+        if (body?.action === 'list_accounts') return Promise.resolve({ accounts: loginAccounts })
         return Promise.resolve({ accessToken: 'access-token', refreshToken: 'refresh-token' })
       }
       if (name === 'bootstrap') {
@@ -104,14 +105,15 @@ describe('production authentication flow', () => {
     )
 
     expect(await screen.findByRole('heading', { name: '登录学习工作台' })).toBeInTheDocument()
-    await user.type(screen.getByRole('textbox', { name: '账号' }), 'waynechen')
-    await user.type(screen.getByLabelText('密码'), 'private-password')
-    await user.click(screen.getByRole('button', { name: '登录' }))
+    expect(await screen.findByRole('option', { name: '方老师' })).toBeInTheDocument()
+    expect(screen.getByLabelText('账号')).toHaveDisplayValue('方老师')
+    fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'private-password' } })
+    fireEvent.click(screen.getByRole('button', { name: '登录' }))
 
     await waitFor(() => expect(bootstrapCalls).toBe(2))
     expect(screen.getByRole('heading', { name: '登录学习工作台' })).toBeInTheDocument()
     expect(screen.queryByText('正在载入工作台')).not.toBeInTheDocument()
-    expect(screen.getByRole('textbox', { name: '账号' })).toHaveValue('waynechen')
+    expect(screen.getByLabelText('账号')).toHaveDisplayValue('方老师')
 
     await act(async () => resolveAuthenticatedBootstrap?.(teacherState()))
 
@@ -172,10 +174,12 @@ describe('production authentication flow', () => {
   })
 
   it('shows a bootstrap failure on the login form', async () => {
-    const user = userEvent.setup()
     let bootstrapCalls = 0
-    invokeFunctionMock.mockImplementation((name: string) => {
-      if (name === 'username-login') return Promise.resolve({ accessToken: 'access-token', refreshToken: 'refresh-token' })
+    invokeFunctionMock.mockImplementation((name: string, body?: { action?: string }) => {
+      if (name === 'username-login') {
+        if (body?.action === 'list_accounts') return Promise.resolve({ accounts: loginAccounts })
+        return Promise.resolve({ accessToken: 'access-token', refreshToken: 'refresh-token' })
+      }
       if (name === 'bootstrap') {
         bootstrapCalls += 1
         return Promise.reject(new Error(bootstrapCalls === 1 ? 'Unauthorized' : '平台数据加载失败'))
@@ -194,9 +198,9 @@ describe('production authentication flow', () => {
     )
 
     expect(await screen.findByRole('heading', { name: '登录学习工作台' })).toBeInTheDocument()
-    await user.type(screen.getByRole('textbox', { name: '账号' }), 'waynechen')
-    await user.type(screen.getByLabelText('密码'), 'private-password')
-    await user.click(screen.getByRole('button', { name: '登录' }))
+    expect(await screen.findByRole('option', { name: '方老师' })).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'private-password' } })
+    fireEvent.click(screen.getByRole('button', { name: '登录' }))
 
     expect(await screen.findByText('平台数据加载失败')).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: '登录学习工作台' })).toBeInTheDocument()

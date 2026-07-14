@@ -4,7 +4,7 @@ import { EmptyState } from '../../components/EmptyState'
 import { PageHeader } from '../../components/PageHeader'
 import { StatusPill } from '../../components/StatusPill'
 import { usePlatform } from '../../context/PlatformContext'
-import { relativeTime, subjectLabels } from '../../lib/utils'
+import { localDateKey, relativeTime, subjectLabels } from '../../lib/utils'
 
 export function StudentDashboard() {
   const { state } = usePlatform()
@@ -13,10 +13,10 @@ export function StudentDashboard() {
   const assignments = state.submissions
     .filter((item) => item.studentId === studentId && item.mode === 'assignment')
     .sort((left, right) => new Date(right.submittedAt).getTime() - new Date(left.submittedAt).getTime())
-  const today = new Date().toISOString().slice(0, 10)
-  const evaluation = state.dailyEvaluations
+  const today = localDateKey()
+  const evaluations = state.dailyEvaluations
     .filter((item) => item.studentId === studentId && item.date.slice(0, 10) === today)
-    .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0]
+    .sort((left, right) => (left.subject ?? '').localeCompare(right.subject ?? '') || new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())
 
   return (
     <>
@@ -36,12 +36,13 @@ export function StudentDashboard() {
 
       <div className="student-home-grid">
         <section className="panel daily-evaluation-panel">
-          <div className="panel-header"><div><h2>老师今日评价</h2><p>{evaluation?.subject ? subjectLabels[evaluation.subject] : '基于今天的课堂和作业表现'}</p></div><Sparkles size={18} /></div>
-          {evaluation ? <div className="evaluation-body">
+          <div className="panel-header"><div><h2>老师今日评价</h2><p>{evaluations.length ? `今日共 ${evaluations.length} 条` : '基于今天的课堂和作业表现'}</p></div><Sparkles size={18} /></div>
+          {evaluations.length ? <div className="daily-evaluation-list">{evaluations.map((evaluation) => <article className="evaluation-body" key={evaluation.id}>
+            <strong className="evaluation-subject">{evaluation.subject ? subjectLabels[evaluation.subject] : '综合评价'}</strong>
             <p>{evaluation.summary}</p>
-            {evaluation.highlights.length > 0 && <div><strong>做得好</strong>{evaluation.highlights.map((item) => <span className="evaluation-point positive" key={item}><CheckCircle2 size={14} />{item}</span>)}</div>}
-            {evaluation.improvements.length > 0 && <div><strong>下一步</strong>{evaluation.improvements.map((item) => <span className="evaluation-point" key={item}>{item}</span>)}</div>}
-          </div> : <EmptyState icon={Sparkles} title="老师今天还没有发布评价" detail="发布后会显示在这里。" />}
+            {evaluation.highlights.length > 0 && <div><strong>做得好</strong>{evaluation.highlights.map((item, index) => <span className="evaluation-point positive" key={`${evaluation.id}-highlight-${index}`}><CheckCircle2 size={14} />{item}</span>)}</div>}
+            {evaluation.improvements.length > 0 && <div><strong>下一步</strong>{evaluation.improvements.map((item, index) => <span className="evaluation-point" key={`${evaluation.id}-improvement-${index}`}>{item}</span>)}</div>}
+          </article>)}</div> : <EmptyState icon={Sparkles} title="老师今天还没有发布评价" detail="发布后会显示在这里。" />}
         </section>
 
         <section className="panel grading-status-panel">

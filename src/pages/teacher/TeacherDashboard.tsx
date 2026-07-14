@@ -13,7 +13,7 @@ export function TeacherDashboard() {
   const { state } = usePlatform()
   const pending = state.submissions.filter((item) => item.status === 'needs_review' || item.status === 'failed')
   const unread = state.messages.filter((item) => item.senderRole === 'student' && !item.read)
-  const due = state.reviewTasks.filter((item) => item.status === 'due')
+  const due = state.reviewTasks.filter((item) => item.status === 'due' && new Date(item.dueAt).getTime() <= Date.now())
   const activeDocs = state.knowledgeDocuments.filter((item) => item.active)
   const tagCounts = Object.entries(errorTagLabels).map(([tag, label]) => ({
     label,
@@ -44,7 +44,7 @@ export function TeacherDashboard() {
             {pending.length ? pending.slice(0, 5).map((submission) => {
               const student = state.students.find((item) => item.id === submission.studentId)
               return (
-                <Link to={`/teacher/review?submission=${submission.id}`} className="list-row review-queue-row" key={submission.id}>
+                <Link to={`/teacher/review?mode=${submission.mode}&submission=${submission.id}`} className="list-row review-queue-row" key={submission.id}>
                   <Avatar name={student?.displayName ?? '学生'} color={student?.avatarColor ?? '#78716c'} />
                   <div className="list-row-main"><strong>{submission.title}</strong><p>{student?.displayName} · {subjectLabels[submission.subject]} · {submission.wrongNumbers.length ? `错题 ${submission.wrongNumbers.join('、')}` : '未标错题号'}</p></div>
                   <div className="list-row-meta"><StatusPill status={submission.status} /><span>{relativeTime(submission.submittedAt)}</span><ChevronRight size={16} /></div>

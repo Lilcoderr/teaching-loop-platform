@@ -14,7 +14,7 @@ import { canUseKnowledgeSource } from '../lib/knowledge'
 import { nextReviewDate } from '../lib/review'
 import { runtime } from '../lib/runtime'
 import { invokeFunction, supabase } from '../lib/supabase'
-import { uniqueId } from '../lib/utils'
+import { localDateKey, uniqueId } from '../lib/utils'
 import type {
   AccountRecord,
   ErrorTag,
@@ -58,9 +58,9 @@ interface PlatformContextValue {
   switchDemoUser: (role: Role, userId?: string) => void
   signIn: (username: string, password: string) => Promise<void>
   signOut: () => Promise<void>
-  changePassword: (newPassword: string) => Promise<void>
+  changePassword: (currentPassword: string, newPassword: string) => Promise<void>
   createSubmission: (input: SubmissionInput, files: File[]) => Promise<string>
-  approveSubmission: (submissionId: string, tags: ErrorTag[], teacherNote: string) => Promise<void>
+  approveSubmission: (submissionId: string, tags: ErrorTag[], teacherNote: string, confirmedWrongNumbers?: string[]) => Promise<void>
   gradeSubmission: (submissionId: string, feedback: string, questionComments: QuestionComment[], score?: number, maxScore?: number) => Promise<void>
   rejectSubmission: (submissionId: string, reason: string) => Promise<void>
   saveDailyEvaluation: (studentId: string, date: string, summary: string, highlights: string[], improvements: string[], subject?: Subject) => Promise<void>
@@ -68,7 +68,7 @@ interface PlatformContextValue {
   completeReview: (taskId: string, passed: boolean) => Promise<void>
   sendMessage: (studentId: string, body: string) => Promise<void>
   markMessagesRead: (studentId: string) => Promise<void>
-  sendTutorMessage: (body: string, level: HintLevel, attempt?: string, subject?: Subject) => Promise<void>
+  sendTutorMessage: (body: string, level: HintLevel, attempt?: string, subject?: Subject, image?: TutorImageInput) => Promise<void>
   generateReportDraft: (studentId: string) => Promise<WeeklyReport>
   saveReport: (report: WeeklyReport) => Promise<void>
   publishReport: (reportId: string) => Promise<void>
@@ -82,6 +82,13 @@ interface PlatformContextValue {
   deleteStudentData: (studentId: string, requestId: string, confirmation: string) => Promise<void>
   resetDemo: () => void
   refresh: () => Promise<void>
+}
+
+export interface TutorImageInput {
+  dataUrl: string
+  mimeType: 'image/jpeg' | 'image/png' | 'image/webp'
+  name: string
+  size: number
 }
 
 type NewAccountInput = Omit<AccountRecord, 'id' | 'lastActiveAt'> & Partial<
@@ -129,6 +136,7 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
   const loadingRef = useRef(!runtime.demoMode)
   const authEpoch = useRef(0)
   const latestRefreshRequest = useRef(0)
+  const lastBootstrapAt = useRef(0)
   const authRefresh = useRef<{ epoch: number; promise: Promise<void> } | null>(null)
   const [activeStudentId, setActiveStudentId] = useState<string | undefined>(() => {
     const user = runtime.demoMode ? loadDemoState().currentUser : undefined
@@ -147,6 +155,7 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
       const next = await invokeFunction<PlatformState>('bootstrap')
       if (requestEpoch === authEpoch.current && requestId === latestRefreshRequest.current) {
         setState(next)
+        lastBootstrapAt.current = Date.now()
         setAuthenticated(true)
         setActiveStudentId((current) => {
           if (next.currentUser.role === 'student') return next.currentUser.id
@@ -203,6 +212,24 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
   }, [refresh, refreshAfterSignIn])
 
   useEffect(() => {
+    if (runtime.demoMode || !authenticated) return
+    const refreshExpiringLinks = () => {
+      if (Date.now() - lastBootstrapAt.current >= 45 * 60 * 1000) void refresh()
+    }
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') refreshExpiringLinks()
+    }
+    const interval = window.setInterval(refreshExpiringLinks, 10 * 60 * 1000)
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    window.addEventListener('focus', refreshExpiringLinks)
+    return () => {
+      window.clearInterval(interval)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      window.removeEventListener('focus', refreshExpiringLinks)
+    }
+  }, [authenticated, refresh])
+
+  useEffect(() => {
     if (!runtime.demoMode) return
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ version: STORAGE_VERSION, state }))
   }, [state])
@@ -251,10 +278,12 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
     await supabase?.auth.signOut()
   }, [])
 
-  const changePassword = useCallback(async (newPassword: string) => {
+  const changePassword = useCallback(async (currentPassword: string, newPassword: string) => {
+    if (!currentPassword) throw new Error('请输入当前密码')
     if (newPassword.length < 10) throw new Error('新密码至少 10 位')
+    if (currentPassword === newPassword) throw new Error('新密码不能与当前密码相同')
     if (!runtime.demoMode && supabase) {
-      await invokeFunction('account-admin', { action: 'change_password', newPassword })
+      await invokeFunction('account-admin', { action: 'change_password', currentPassword, newPassword })
       await refresh()
       return
     }
@@ -361,7 +390,15 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
     return submissionId
   }, [activeStudentId, refresh, state.currentUser, state.settings.aiEnabled])
 
-  const approveSubmission = useCallback(async (submissionId: string, tags: ErrorTag[], teacherNote: string) => {
+  const approveSubmission = useCallback(async (
+    submissionId: string,
+    tags: ErrorTag[],
+    teacherNote: string,
+    confirmedWrongNumbers: string[] = [],
+  ) => {
+    const normalizedConfirmedWrongNumbers = [...new Set(confirmedWrongNumbers
+      .map((value) => value.trim().slice(0, 40))
+      .filter(Boolean))].slice(0, 50)
     if (!runtime.demoMode) {
       const submission = state.submissions.find((item) => item.id === submissionId)
       if (submission?.mode === 'wrong_item') {
@@ -370,7 +407,10 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
           teacherHint: '', teacherEvaluation: teacherNote,
         })
       } else {
-        await invokeFunction('review-submission', { submissionId, action: 'approve', tags, teacherNote })
+        await invokeFunction('review-submission', {
+          submissionId, action: 'approve', tags, teacherNote,
+          confirmedWrongNumbers: normalizedConfirmedWrongNumbers,
+        })
       }
       await refresh()
       return
@@ -378,7 +418,9 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
     setState((previous) => {
       const submission = previous.submissions.find((item) => item.id === submissionId)
       if (!submission) return previous
-      const wrongNumbers = submission.wrongNumbers.length ? submission.wrongNumbers : ['未标注']
+      const wrongNumbers = submission.mode === 'wrong_item'
+        ? (submission.wrongNumbers.length ? submission.wrongNumbers : ['未标注'])
+        : normalizedConfirmedWrongNumbers
       const newWrongItems = wrongNumbers.map((questionNumber) => ({
         id: uniqueId('wrong'),
         studentId: submission.studentId,
@@ -409,7 +451,7 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
       return {
         ...previous,
         submissions: previous.submissions.map((item) =>
-          item.id === submissionId ? { ...item, status: 'scheduled' } : item,
+          item.id === submissionId ? { ...item, status: wrongNumbers.length ? 'scheduled' : 'approved' } : item,
         ),
         wrongItems: [...newWrongItems, ...previous.wrongItems],
         reviewTasks: [...newTasks, ...previous.reviewTasks],
@@ -442,10 +484,21 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
     }
     setState((previous) => ({
       ...previous,
-      submissions: previous.submissions.map((submission) => submission.id === submissionId ? {
-        ...submission, teacherFeedback: feedback, questionComments, teacherScore: score,
-        maxScore, gradedAt: new Date().toISOString(),
-      } : submission),
+      submissions: previous.submissions.map((submission) => {
+        if (submission.id !== submissionId) return submission
+        const hint = questionComments.map((item) => `第${item.questionNumber}题：${item.comment}`).join('\n')
+        return submission.mode === 'wrong_item' ? {
+          ...submission,
+          teacherHint: hint || submission.teacherHint,
+          teacherEvaluation: feedback || submission.teacherEvaluation,
+          teacherFeedback: feedback || hint || submission.teacherFeedback,
+          questionComments,
+          gradedAt: new Date().toISOString(),
+        } : {
+          ...submission, teacherFeedback: feedback, questionComments, teacherScore: score,
+          maxScore, gradedAt: new Date().toISOString(),
+        }
+      }),
     }))
   }, [refresh, state.submissions])
 
@@ -474,8 +527,20 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
     files: File[],
   ) => {
     if (!runtime.demoMode && supabase) {
+      let searchableBody = input.body?.trim() ?? ''
+      if (!searchableBody && files.length === 1) {
+        const file = files[0]
+        const lowerName = file.name.toLowerCase()
+        if (file.type === 'text/markdown' || lowerName.endsWith('.md')) {
+          searchableBody = (await file.text()).trim().slice(0, 100000)
+        } else if (file.type === 'text/html' || lowerName.endsWith('.html') || lowerName.endsWith('.htm')) {
+          const source = await file.text()
+          searchableBody = (new DOMParser().parseFromString(source, 'text/html').body.textContent ?? '')
+            .replace(/\s+/g, ' ').trim().slice(0, 100000)
+        }
+      }
       const result = await invokeFunction<{ material: { id: string } }>('teacher-content', {
-        action: 'material_create', ...input, published: false,
+        action: 'material_create', ...input, body: searchableBody, published: false,
       })
       const materialId = result.material.id
       for (const file of files) {
@@ -597,19 +662,33 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
     }))
   }, [])
 
-  const sendTutorMessage = useCallback(async (body: string, level: HintLevel, attempt?: string, subject?: Subject) => {
+  const sendTutorMessage = useCallback(async (
+    body: string,
+    level: HintLevel,
+    attempt?: string,
+    subject?: Subject,
+    image?: TutorImageInput,
+  ) => {
     const studentId = state.currentUser.role === 'student' ? state.currentUser.id : activeStudentId
-    if (!studentId || !body.trim()) return
+    const message = body.trim() || (image ? '请分析这张题目图片' : '')
+    if (!studentId || !message) return
     const studentTurn: TutorTurn = {
       id: uniqueId('turn'),
       studentId,
       role: 'student',
-      body: body.trim(),
+      body: message,
       createdAt: new Date().toISOString(),
     }
 
     if (!runtime.demoMode) {
-      const response = await invokeFunction<TutorTurn & { studentTurnId: string }>('tutor-chat', { message: body, hintLevel: level, attempt, subject })
+      const response = await invokeFunction<TutorTurn & { studentTurnId: string }>('tutor-chat', {
+        message,
+        hintLevel: level,
+        answerMode: level === 'key_step' ? 'steps' : level,
+        attempt,
+        subject,
+        image,
+      })
       setState((previous) => ({
         ...previous,
         tutorTurns: [...previous.tutorTurns, { ...studentTurn, id: response.studentTurnId }, response],
@@ -619,7 +698,7 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
 
     setState((previous) => ({ ...previous, tutorTurns: [...previous.tutorTurns, studentTurn] }))
     await new Promise((resolve) => window.setTimeout(resolve, 500))
-    const lower = body.toLowerCase()
+    const lower = message.toLowerCase()
     const relatedDocuments = state.knowledgeDocuments.filter(
       (document) =>
         document.studentId === studentId &&
@@ -697,8 +776,8 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
     return {
       id: uniqueId('report'),
       studentId,
-      periodStart: start.toISOString(),
-      periodEnd: end.toISOString(),
+      periodStart: localDateKey(start),
+      periodEnd: localDateKey(end),
       title: '本周学习周报',
       summary: evaluations[0]?.summary ?? `${student?.displayName ?? '学生'}本周提交与复习记录已汇总，以下内容仅基于教师确认的学习证据。`,
       progress: [...(evaluations[0]?.highlights ?? []), ...(completed.length ? [`按计划完成 ${completed.length} 次错题复习`] : [])].slice(0, 4),

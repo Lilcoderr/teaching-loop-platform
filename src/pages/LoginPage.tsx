@@ -1,24 +1,85 @@
-import { ArrowRight, Eye, EyeOff, LoaderCircle, LockKeyhole, NotebookTabs, UserRound } from 'lucide-react'
-import { type FormEvent, useState } from 'react'
+import { ArrowRight, Eye, EyeOff, GraduationCap, LoaderCircle, LockKeyhole, NotebookTabs, ShieldCheck, UserRound, Users } from 'lucide-react'
+import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Brand } from '../components/Brand'
 import { usePlatform } from '../context/PlatformContext'
+import { invokeFunction } from '../lib/supabase'
+import type { Role } from '../types/domain'
+
+interface LoginAccount {
+  id: string
+  role: Role
+  label: string
+  loginIdentifier: string
+}
+
+const roleOptions = [
+  { role: 'teacher', label: '老师', icon: ShieldCheck },
+  { role: 'student', label: '学生', icon: GraduationCap },
+  { role: 'parent', label: '家长', icon: Users },
+] as const
+
+function publicAccountLabel(role: Role, displayName: string) {
+  const firstCharacter = Array.from(displayName.trim())[0] ?? ''
+  if (!firstCharacter) return role === 'teacher' ? '老师' : role === 'parent' ? '学生家长' : '学生'
+  if (role === 'student') return `${firstCharacter}同学`
+  if (role === 'parent') return `${firstCharacter}同学家长`
+  return `${firstCharacter}老师`
+}
 
 export function LoginPage() {
-  const { signIn, demoMode, switchDemoUser } = usePlatform()
+  const { state, signIn, demoMode, switchDemoUser } = usePlatform()
   const navigate = useNavigate()
-  const [username, setUsername] = useState('')
+  const [role, setRole] = useState<Role>('teacher')
+  const [accounts, setAccounts] = useState<LoginAccount[]>([])
+  const [selectedAccountId, setSelectedAccountId] = useState('')
+  const [accountsBusy, setAccountsBusy] = useState(true)
+  const [accountsError, setAccountsError] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
+  const loadAccounts = useCallback(async () => {
+    setAccountsBusy(true)
+    setAccountsError('')
+    try {
+      if (demoMode) {
+        setAccounts(state.accounts.filter((account) => account.status === 'active').map((account) => ({
+          id: account.id,
+          role: account.role,
+          label: publicAccountLabel(account.role, account.displayName),
+          loginIdentifier: account.username,
+        })))
+        return
+      }
+      const result = await invokeFunction<{ accounts: Array<Omit<LoginAccount, 'loginIdentifier'>> }>('username-login', { action: 'list_accounts' })
+      setAccounts(result.accounts.map((account) => ({ ...account, loginIdentifier: account.id })))
+    } catch {
+      setAccountsError('暂时无法读取账号，请检查网络后重试')
+    } finally {
+      setAccountsBusy(false)
+    }
+  }, [demoMode, state.accounts])
+
+  useEffect(() => { void loadAccounts() }, [loadAccounts])
+
+  const roleAccounts = useMemo(() => accounts.filter((account) => account.role === role), [accounts, role])
+  useEffect(() => {
+    if (!roleAccounts.some((account) => account.id === selectedAccountId)) {
+      setSelectedAccountId(roleAccounts[0]?.id ?? '')
+    }
+  }, [roleAccounts, selectedAccountId])
+
+  const selectedAccount = roleAccounts.find((account) => account.id === selectedAccountId)
+
   const submit = async (event: FormEvent) => {
     event.preventDefault()
+    if (!selectedAccount) return
     setBusy(true)
     setError('')
     try {
-      await signIn(username, password)
+      await signIn(selectedAccount.loginIdentifier, password)
       if (demoMode) navigate('/', { replace: true })
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '登录失败')
@@ -41,10 +102,28 @@ export function LoginPage() {
           <p>使用老师分配的账号继续</p>
         </div>
         <form onSubmit={submit}>
+          <fieldset className="login-role-picker">
+            <legend>选择登录身份</legend>
+            <div className="segmented-control" role="group" aria-label="登录身份">
+              {roleOptions.map(({ role: value, label, icon: Icon }) => (
+                <button type="button" className={role === value ? 'active' : ''} aria-pressed={role === value} onClick={() => { setRole(value); setPassword(''); setError('') }} key={value}>
+                  <Icon size={16} />{label}
+                </button>
+              ))}
+            </div>
+          </fieldset>
           <label className="field">
             <span>账号</span>
-            <div className="input-with-icon"><UserRound size={18} /><input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" placeholder="用户名" /></div>
+            <div className="input-with-icon">
+              <UserRound size={18} />
+              <select value={selectedAccountId} onChange={(event) => setSelectedAccountId(event.target.value)} disabled={accountsBusy || !roleAccounts.length} autoComplete="username">
+                {accountsBusy && <option value="">正在读取账号</option>}
+                {!accountsBusy && !roleAccounts.length && <option value="">暂无可用账号</option>}
+                {roleAccounts.map((account) => <option value={account.id} key={account.id}>{account.label}</option>)}
+              </select>
+            </div>
           </label>
+          {accountsError && <div className="account-load-error"><span>{accountsError}</span><button type="button" onClick={() => void loadAccounts()}>重试</button></div>}
           <label className="field">
             <span>密码</span>
             <div className="input-with-icon">
@@ -56,7 +135,7 @@ export function LoginPage() {
             </div>
           </label>
           {error && <p className="form-error">{error}</p>}
-          <button className="button primary wide" type="submit" disabled={busy || !username.trim() || !password}>
+          <button className="button primary wide" type="submit" disabled={busy || accountsBusy || !selectedAccount || !password}>
             {busy ? <LoaderCircle className="spin" size={18} /> : <ArrowRight size={18} />}登录
           </button>
         </form>

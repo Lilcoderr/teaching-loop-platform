@@ -122,13 +122,16 @@ Edge Functions 依赖环境变量：
 | `SUPABASE_ANON_KEY` | 必需 | 验证普通用户请求 |
 | `SUPABASE_SERVICE_ROLE_KEY` | 必需 | 服务端特权操作 |
 | `ALLOWED_ORIGINS` | 正式必需 | 允许的前端 Origin |
-| `AI_BASE_URL` | 可选 | OpenAI 兼容模型服务 |
-| `AI_API_KEY` | 可选 | 模型密钥 |
-| `AI_TEXT_MODEL` | 可选 | 文本分析/答疑模型 |
-| `AI_VISION_MODEL` | 可选 | 图片识别模型 |
-| `AI_EMBEDDING_MODEL` | 可选 | 向量模型 |
+| `AI_BASE_URL` | 可选 | 三类模型共用的 OpenAI 兼容服务地址；可被下方分类地址覆盖 |
+| `AI_API_KEY` | 可选 | 三类模型共用密钥；可被下方分类密钥覆盖 |
+| `AI_TEXT_BASE_URL` / `AI_TEXT_API_KEY` | 可选 | 文本答疑与周报模型的独立服务地址和密钥 |
+| `AI_VISION_BASE_URL` / `AI_VISION_API_KEY` | 图片答疑必需 | 作业识别和题目图片答疑的独立服务地址和密钥 |
+| `AI_EMBEDDING_BASE_URL` / `AI_EMBEDDING_API_KEY` | 向量检索可选 | Embedding 服务的独立地址和密钥；未配置时仍使用关键词检索 |
+| `AI_TEXT_MODEL` | 可选 | 文本分析/答疑模型；设置后覆盖数据库中的默认模型名 |
+| `AI_VISION_MODEL` | 图片答疑必需 | 必须是所配置视觉服务实际支持图片输入的模型，不能填写纯文本模型 |
+| `AI_EMBEDDING_MODEL` | 可选 | 1536 维向量模型，默认 `text-embedding-3-small` |
 
-AI 未配置时，上传、人工批改、错题整理、评价、学习资料、留言和复习功能仍应可用。
+分类配置优先于共用的 `AI_BASE_URL` / `AI_API_KEY`；某一分类缺少地址或密钥时，对应字段会分别回退到共用配置。若没有共用后备，则该分类的 URL 与 Key 必须同时配置。模型接口需兼容 OpenAI 的 `/chat/completions` 或 `/embeddings` 请求格式。AI 未配置时，上传、人工批改、错题整理、评价、学习资料、留言和复习功能仍应可用；图片答疑会明确提示视觉模型不可用，不会假装识别图片。
 
 ## 8. 前端构建
 

@@ -1,5 +1,5 @@
 import { handleOptions } from '../_shared/cors.ts'
-import { requireActor, sha256 } from '../_shared/auth.ts'
+import { publicClient, requireActor, sha256 } from '../_shared/auth.ts'
 import { asErrorResponse, HttpError, json, readJson, requireString } from '../_shared/http.ts'
 
 const USERNAME = /^[A-Za-z0-9_.-]{2,40}$/
@@ -45,8 +45,18 @@ Deno.serve(async (request) => {
     const action = requireString(body.action, 'action', 40)
 
     if (action === 'change_password') {
+      const currentPassword = requireString(body.currentPassword, '当前密码', 256)
       const newPassword = requireString(body.newPassword, '新密码', 256)
       if (newPassword.length < 10) throw new HttpError(400, '新密码至少 10 位', 'weak_password')
+      if (currentPassword === newPassword) throw new HttpError(400, '新密码不能与当前密码相同', 'password_unchanged')
+      const { data: authUser, error: userError } = await db.auth.admin.getUserById(actor.id)
+      const email = authUser.user?.email
+      if (userError || !email) throw new HttpError(401, '无法验证当前账号', 'reauthentication_failed')
+      const { error: verificationError } = await publicClient().auth.signInWithPassword({
+        email,
+        password: currentPassword,
+      })
+      if (verificationError) throw new HttpError(401, '当前密码不正确', 'invalid_current_password')
       const { error: authError } = await db.auth.admin.updateUserById(actor.id, { password: newPassword })
       if (authError) throw authError
       const { error } = await db.from('profiles').update({ must_change_password: false }).eq('id', actor.id)

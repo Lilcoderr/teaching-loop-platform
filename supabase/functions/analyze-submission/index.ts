@@ -75,13 +75,21 @@ Deno.serve(async (request) => {
       const parts = String(attachment.storage_path).split('/')
       return parts.length >= 3 && parts[0] === attachment.student_id && parts[1] === submissionId
     }).slice(0, 12)
+    const imageAttachments = safeAttachments.filter((attachment) =>
+      String(attachment.mime_type).startsWith('image/'),
+    )
 
     const fallback = {
-      summary: '已保留学生提交，AI 当前未生成可靠分析，请教师结合原图复核。',
+      summary: safeAttachments.length > 0 && imageAttachments.length === 0
+        ? '已保留学生提交；当前文件没有可供视觉模型读取的图片页，请教师打开原文件人工批改。'
+        : '已保留学生提交，AI 当前未生成可靠分析，请教师结合原图复核。',
       questionText: undefined as string | undefined,
       proposedTags: submission.student_error_tags?.length ? submission.student_error_tags : [],
       knowledgePoints: [] as string[],
-      evidence: submission.self_reflection ? [`学生自述：${submission.self_reflection}`] : ['学生未填写自我复盘'],
+      evidence: [
+        ...(submission.self_reflection ? [`学生自述：${submission.self_reflection}`] : ['学生未填写自我复盘']),
+        ...(safeAttachments.length > 0 && imageAttachments.length === 0 ? ['附件未经过可靠的图片识别，禁止据此自动评分'] : []),
+      ],
       confidence: 0,
       proposedScore: undefined as number | undefined,
       proposedMaxScore: undefined as number | undefined,
@@ -91,13 +99,12 @@ Deno.serve(async (request) => {
     }
     let parsed: Record<string, unknown> | null = null
     let modelResult = null
-    if (settings?.ai_enabled && studentProfile?.guardian_consent_at) {
+    if (settings?.ai_enabled && studentProfile?.guardian_consent_at && imageAttachments.length > 0) {
       const content: Array<Record<string, unknown>> = [{
         type: 'text',
         text: `科目：${submission.subject}\n提交类型：${submission.mode}\n标题：${submission.title}\n错题号：${(submission.wrong_numbers ?? []).join('、') || '未标注'}\n学生自述：${submission.self_reflection || '无'}\n用时：${submission.minutes_spent ?? '未填'} 分钟。`,
       }]
-      for (const attachment of safeAttachments) {
-        if (!String(attachment.mime_type).startsWith('image/')) continue
+      for (const attachment of imageAttachments) {
         const { data: signed } = await db.storage.from('submissions').createSignedUrl(attachment.storage_path, 600)
         if (signed?.signedUrl) content.push({ type: 'image_url', image_url: { url: signed.signedUrl, detail: 'high' } })
       }
@@ -163,7 +170,12 @@ Deno.serve(async (request) => {
         evidence: record.evidence.join('；').slice(0, 4000) || 'AI 根据提交附件生成，待教师确认',
       })
     }
-    await db.from('submissions').update({ status: 'needs_review', failure_reason: !parsed ? 'AI 未配置或分析失败，已转人工复核' : null })
+    const failureReason = parsed
+      ? null
+      : imageAttachments.length === 0
+        ? '附件未包含可识别图片，已转人工复核'
+        : 'AI 未配置或分析失败，已转人工复核'
+    await db.from('submissions').update({ status: 'needs_review', failure_reason: failureReason })
       .eq('id', submissionId).eq('status', 'analyzing')
     recoverySubmissionId = undefined
     await db.from('model_usage').insert({

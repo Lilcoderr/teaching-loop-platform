@@ -68,8 +68,10 @@ export function KnowledgePage() {
   const [subjectFilter, setSubjectFilter] = useState<'all' | Subject>('all')
   const [categoryFilter, setCategoryFilter] = useState<'all' | MaterialCategory>('all')
   const [copied, setCopied] = useState(false)
+  const [tokenCopied, setTokenCopied] = useState(false)
   const [generatedToken, setGeneratedToken] = useState<{ token: string; tokenId: string } | null>(null)
   const [tokenBusy, setTokenBusy] = useState(false)
+  const [tokenError, setTokenError] = useState('')
   const [tokenOperation, setTokenOperation] = useState<'knowledge' | 'question_bank'>('knowledge')
   const [tokenStudentId, setTokenStudentId] = useState(state.students[0]?.id ?? '')
   const [tokenSubject, setTokenSubject] = useState<Subject>('math')
@@ -105,15 +107,38 @@ export function KnowledgePage() {
     : 'npm run question-bank:import -- --config question-bank-import.local.json'
 
   const copy = async () => {
-    await navigator.clipboard.writeText(command)
-    setCopied(true)
-    window.setTimeout(() => setCopied(false), 1500)
+    setTokenError('')
+    try {
+      await navigator.clipboard.writeText(command)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1500)
+    } catch (reason) {
+      setTokenError(reason instanceof Error ? reason.message : '命令复制失败，请手动选择复制')
+    }
   }
 
-  const closeConfig = () => { setConfigOpen(false); setGeneratedToken(null) }
+  const copyToken = async (token: string) => {
+    setTokenError('')
+    try {
+      await navigator.clipboard.writeText(token)
+      setTokenCopied(true)
+      window.setTimeout(() => setTokenCopied(false), 1500)
+    } catch (reason) {
+      setTokenError(reason instanceof Error ? reason.message : '令牌复制失败，请手动选择复制')
+    }
+  }
+
+  const closeConfig = () => {
+    if (tokenBusy) return
+    setConfigOpen(false)
+    setGeneratedToken(null)
+    setTokenError('')
+  }
 
   const issueToken = async () => {
+    if (tokenBusy) return
     setTokenBusy(true)
+    setTokenError('')
     try {
       setGeneratedToken(await createSyncToken(
         tokenOperation === 'knowledge' ? '本地学习资料同步' : '本地题库导入',
@@ -121,7 +146,23 @@ export function KnowledgePage() {
         tokenOperation === 'knowledge' ? [tokenStudentId] : [],
         [tokenSubject],
       ))
+    } catch (reason) {
+      setTokenError(reason instanceof Error ? reason.message : '同步令牌生成失败，请稍后重试')
     } finally { setTokenBusy(false) }
+  }
+
+  const revokeToken = async (tokenId: string) => {
+    if (tokenBusy) return
+    setTokenBusy(true)
+    setTokenError('')
+    try {
+      await revokeSyncToken(tokenId)
+      if (generatedToken?.tokenId === tokenId) setGeneratedToken(null)
+    } catch (reason) {
+      setTokenError(reason instanceof Error ? reason.message : '同步令牌撤销失败，请稍后重试')
+    } finally {
+      setTokenBusy(false)
+    }
   }
 
   const chooseUploadStudent = (studentId: string) => {
@@ -131,6 +172,7 @@ export function KnowledgePage() {
   }
 
   const publishUpload = async () => {
+    if (uploadBusy) return
     setUploadError('')
     if (!uploadStudentId || !uploadTopic.trim() || !uploadTitle.trim()) return setUploadError('请完整填写学生、专题目录和资料名称')
     if (uploadCategory === 'method' && !uploadBody.trim()) return setUploadError('请填写方法技巧的 Markdown 正文')
@@ -154,7 +196,7 @@ export function KnowledgePage() {
         title="学习资料"
         description="按学生、科目和专题管理讲义、作业、补充习题与方法技巧。"
         actions={<>
-          <button className="button" type="button" onClick={() => setConfigOpen(true)}><RefreshCw size={16} /><span>本地同步</span></button>
+          <button className="button" type="button" onClick={() => { setConfigOpen(true); setTokenError('') }}><RefreshCw size={16} /><span>本地同步</span></button>
           <button className="button primary" type="button" onClick={() => setUploadOpen(true)}><Plus size={16} /><span>添加资料</span></button>
         </>}
       />
@@ -223,7 +265,7 @@ export function KnowledgePage() {
         </div>
       </section>
 
-      <Modal open={uploadOpen} title="添加学习资料" onClose={() => setUploadOpen(false)} footer={<><button type="button" className="button" onClick={() => setUploadOpen(false)}>取消</button><button type="button" className="button primary" disabled={uploadBusy} onClick={() => void publishUpload()}><UploadCloud size={16} />{uploadBusy ? '正在上传' : '上传并发布'}</button></>}>
+      <Modal open={uploadOpen} title="添加学习资料" onClose={() => { if (!uploadBusy) setUploadOpen(false) }} footer={<><button type="button" className="button" onClick={() => setUploadOpen(false)} disabled={uploadBusy}>取消</button><button type="button" className="button primary" disabled={uploadBusy} onClick={() => void publishUpload()}><UploadCloud size={16} />{uploadBusy ? '正在上传' : '上传并发布'}</button></>}>
         <div className="sync-config">
           <label className="field"><span>分配给学生</span><select value={uploadStudentId} onChange={(event) => chooseUploadStudent(event.target.value)}>{state.students.map((student) => <option key={student.id} value={student.id}>{student.displayName}</option>)}</select></label>
           <label className="field"><span>科目</span><select value={uploadSubject} onChange={(event) => setUploadSubject(event.target.value as Subject)}>{(uploadStudent?.subjects ?? ['math']).map((subject) => <option key={subject} value={subject}>{subjectLabels[subject]}</option>)}</select></label>
@@ -231,7 +273,7 @@ export function KnowledgePage() {
           <label className="field"><span>专题目录</span><input value={uploadTopic} onChange={(event) => setUploadTopic(event.target.value)} placeholder="例如：数列 / 等差数列" /></label>
           <label className="field"><span>资料名称</span><input value={uploadTitle} onChange={(event) => setUploadTitle(event.target.value)} placeholder="输入学生端显示的名称" /></label>
           <label className="field"><span>资料说明（可选）</span><textarea value={uploadDescription} onChange={(event) => setUploadDescription(event.target.value)} placeholder="作为副标题展示，可填写学习要求、重点或使用方法" /></label>
-          {uploadCategory === 'method' ? <label className="field"><span>方法正文（Markdown）</span><textarea className="markdown-editor" value={uploadBody} onChange={(event) => setUploadBody(event.target.value)} placeholder={'## 方法名称\n\n适用条件、关键步骤与易错提醒……\n\n公式可写为 $a_n=a_1+(n-1)d$'} /></label> : <label className="field"><span>选择文件</span><input type="file" accept=".pdf,.md,.html,.doc,.docx,application/pdf,text/markdown,text/html" onChange={(event) => setUploadFile(event.target.files?.[0] ?? null)} /></label>}
+          {uploadCategory === 'method' ? <label className="field"><span>方法正文（Markdown）</span><textarea className="markdown-editor" value={uploadBody} onChange={(event) => setUploadBody(event.target.value)} placeholder={'## 方法名称\n\n适用条件、关键步骤与易错提醒……\n\n公式可写为 $a_n=a_1+(n-1)d$'} /></label> : <label className="field"><span>选择文件</span><input type="file" accept=".pdf,.md,.html,.doc,.docx,application/pdf,text/markdown,text/html" onChange={(event) => setUploadFile(event.target.files?.[0] ?? null)} /><small className="field-hint">Markdown 和 HTML 正文会自动进入 AI 检索；PDF、Word 暂只供学生浏览，AI 不会假装读取未解析正文。</small></label>}
           {uploadFile && <div className="sync-security"><FileText size={18} /><div><strong>{uploadFile.name}</strong><p>{(uploadFile.size / 1024 / 1024).toFixed(1)} MB · {categoryLabels[uploadCategory]} · {subjectLabels[uploadSubject]}</p></div></div>}
           {uploadError && <p className="form-error">{uploadError}</p>}
         </div>
@@ -245,10 +287,10 @@ export function KnowledgePage() {
       <Modal open={configOpen} title="本地增量同步" onClose={closeConfig}>
         <div className="sync-config">
           <div className="sync-security"><KeyRound size={18} /><div><strong>专用同步令牌</strong><p>令牌仅写入本机 `.env.local`，可在后台随时撤销。</p></div></div>
-          <label className="field"><span>令牌用途</span><select value={tokenOperation} onChange={(event) => { setTokenOperation(event.target.value as 'knowledge' | 'question_bank'); setGeneratedToken(null) }}><option value="knowledge">学习资料同步</option><option value="question_bank">已复核题库导入</option></select></label>
-          {tokenOperation === 'knowledge' && <label className="field"><span>限定学生</span><select value={tokenStudentId} onChange={(event) => setTokenStudentId(event.target.value)}>{state.students.map((student) => <option key={student.id} value={student.id}>{student.displayName}</option>)}</select></label>}
-          <label className="field"><span>限定科目</span><select value={tokenSubject} onChange={(event) => setTokenSubject(event.target.value as Subject)}><option value="math">数学</option><option value="physics">物理</option><option value="chemistry">化学</option></select></label>
-          {generatedToken ? <div className="generated-token"><span>仅显示一次</span><div><code>{generatedToken.token}</code><button type="button" className="icon-button" onClick={() => void navigator.clipboard.writeText(generatedToken.token)} title="复制令牌"><Copy size={16} /></button></div><button type="button" className="button danger small" onClick={async () => { await revokeSyncToken(generatedToken.tokenId); setGeneratedToken(null) }}>立即撤销</button></div> : <button type="button" className="button" onClick={() => void issueToken()} disabled={tokenBusy || (tokenOperation === 'knowledge' && !tokenStudentId)}><KeyRound size={15} />{tokenBusy ? '正在签发' : '生成新同步令牌'}</button>}
+          <label className="field"><span>令牌用途</span><select value={tokenOperation} disabled={tokenBusy} onChange={(event) => { setTokenOperation(event.target.value as 'knowledge' | 'question_bank'); setGeneratedToken(null); setTokenError('') }}><option value="knowledge">学习资料同步</option><option value="question_bank">已复核题库导入</option></select></label>
+          {tokenOperation === 'knowledge' && <label className="field"><span>限定学生</span><select value={tokenStudentId} disabled={tokenBusy} onChange={(event) => setTokenStudentId(event.target.value)}>{state.students.map((student) => <option key={student.id} value={student.id}>{student.displayName}</option>)}</select></label>}
+          <label className="field"><span>限定科目</span><select value={tokenSubject} disabled={tokenBusy} onChange={(event) => setTokenSubject(event.target.value as Subject)}><option value="math">数学</option><option value="physics">物理</option><option value="chemistry">化学</option></select></label>
+          {generatedToken ? <div className="generated-token"><span>仅显示一次</span><div><code>{generatedToken.token}</code><button type="button" className="icon-button" onClick={() => void copyToken(generatedToken.token)} title="复制令牌" disabled={tokenBusy}>{tokenCopied ? <CheckCircle2 size={16} /> : <Copy size={16} />}</button></div><button type="button" className="button danger small" onClick={() => void revokeToken(generatedToken.tokenId)} disabled={tokenBusy}>立即撤销</button></div> : <button type="button" className="button" onClick={() => void issueToken()} disabled={tokenBusy || (tokenOperation === 'knowledge' && !tokenStudentId)}><KeyRound size={15} />{tokenBusy ? '正在处理' : '生成新同步令牌'}</button>}
           <label className="field"><span>运行命令</span><div className="copy-field"><code>{command}</code><button type="button" className="icon-button" onClick={() => void copy()} title="复制命令">{copied ? <CheckCircle2 size={16} /> : <Copy size={16} />}</button></div></label>
           <div className="config-example"><span><Code2 size={15} />目录映射示例</span><pre>{`{
   "sources": [{
@@ -257,7 +299,8 @@ export function KnowledgePage() {
     "root": "../学生目录/数学"
   }]
 }`}</pre></div>
-          {state.syncTokens.length > 0 && <div className="sync-token-list"><strong>当前有效令牌</strong>{state.syncTokens.map((token) => <div key={token.id}><span>{token.label} · {token.operation === 'knowledge' ? '资料同步' : '题库导入'} · {token.subjects.map((subject) => subjectLabels[subject]).join('、')}</span><button type="button" className="button danger small" onClick={() => void revokeSyncToken(token.id)}><XCircle size={14} />撤销</button></div>)}</div>}
+          {state.syncTokens.length > 0 && <div className="sync-token-list"><strong>当前有效令牌</strong>{state.syncTokens.map((token) => <div key={token.id}><span>{token.label} · {token.operation === 'knowledge' ? '资料同步' : '题库导入'} · {token.subjects.map((subject) => subjectLabels[subject]).join('、')}</span><button type="button" className="button danger small" onClick={() => void revokeToken(token.id)} disabled={tokenBusy}><XCircle size={14} />撤销</button></div>)}</div>}
+          {tokenError && <p className="form-error" role="alert">{tokenError}</p>}
           <div className="sync-security"><Shield size={18} /><div><strong>学生资料隔离</strong><p>同步令牌仅允许写入选定学生与科目的目录。</p></div></div>
         </div>
       </Modal>

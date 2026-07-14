@@ -46,6 +46,10 @@ export function relativeTime(value: string) {
   return formatDistanceToNow(date, { addSuffix: true, locale: zhCN })
 }
 
+export function localDateKey(value: Date = new Date()) {
+  return format(value, 'yyyy-MM-dd')
+}
+
 export function uniqueId(prefix: string) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
 }

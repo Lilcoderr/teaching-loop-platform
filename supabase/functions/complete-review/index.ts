@@ -17,6 +17,9 @@ Deno.serve(async (request) => {
       actor_id: actor.id,
       passed: body.passed,
     })
+    if (error?.message?.includes('review_task_not_due')) {
+      throw new HttpError(409, '这项复习尚未到期，请按计划日期完成', 'review_not_due')
+    }
     if (error) throw error
     return json(request, { ok: true, ...data })
   } catch (error) {

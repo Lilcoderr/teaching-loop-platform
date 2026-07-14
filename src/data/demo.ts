@@ -1,4 +1,5 @@
 import type { PlatformState, StudentProfile, UserProfile } from '../types/domain'
+import { localDateKey } from '../lib/utils'
 
 const now = new Date()
 const isoDaysAgo = (days: number, hour = 9) => {
@@ -148,14 +149,14 @@ export const demoState: PlatformState = {
   ],
   dailyEvaluations: [
     {
-      id: 'evaluation-001', studentId: 'student-lin', date: new Date().toISOString().slice(0, 10), subject: 'math',
+      id: 'evaluation-001', studentId: 'student-lin', date: localDateKey(), subject: 'math',
       summary: '今天作答比昨天更主动，遇到联立计算时能先保留结构再展开。',
       highlights: ['主动标出了判别式使用位置', '能够说明自己从哪一步开始卡住'],
       improvements: ['展开计算后再检查一次符号', '大题结尾补上取值范围'],
       createdAt: isoDaysAgo(0, 18),
     },
     {
-      id: 'evaluation-002', studentId: 'student-zhou', date: new Date().toISOString().slice(0, 10), subject: 'math',
+      id: 'evaluation-002', studentId: 'student-zhou', date: localDateKey(), subject: 'math',
       summary: '基础结论掌握稳定，口头说明公式适用条件时比上次完整。',
       highlights: ['能先验证点是否在曲线上'], improvements: ['继续控制单题用时'], createdAt: isoDaysAgo(0, 17),
     },

@@ -6,7 +6,7 @@ import { PageHeader } from '../../components/PageHeader'
 import { StatusPill } from '../../components/StatusPill'
 import { usePlatform } from '../../context/PlatformContext'
 import { ERROR_TAG_OPTIONS } from '../../lib/review'
-import { cn, formatDateTime, subjectLabels } from '../../lib/utils'
+import { cn, formatDateTime, localDateKey, subjectLabels } from '../../lib/utils'
 import type { ErrorTag, Subject, UploadMode } from '../../types/domain'
 
 function SubmissionUploadPage({ mode }: { mode: UploadMode }) {
@@ -16,7 +16,7 @@ function SubmissionUploadPage({ mode }: { mode: UploadMode }) {
   const [files, setFiles] = useState<File[]>([])
   const [subject, setSubject] = useState<Subject>(student?.subjects[0] ?? 'math')
   const [title, setTitle] = useState('')
-  const [assignmentDate, setAssignmentDate] = useState(new Date().toISOString().slice(0, 10))
+  const [assignmentDate, setAssignmentDate] = useState(localDateKey())
   const [minutesSpent, setMinutesSpent] = useState('')
   const [wrongNumbers, setWrongNumbers] = useState('')
   const [confidence, setConfidence] = useState(3)
@@ -130,7 +130,13 @@ function SubmissionUploadPage({ mode }: { mode: UploadMode }) {
         <div className="panel-header"><div><h2>我上传的问题</h2><p>老师发送提示后会直接显示在这里，归档后可在错题本继续复习</p></div></div>
         {recentQuestions.length ? <div className="question-upload-list">{recentQuestions.map((item) => <article key={item.id}>
           <div><span>{subjectLabels[item.subject]} · {formatDateTime(item.submittedAt)}</span><strong>{item.title}</strong>{item.selfReflection && <p>{item.selfReflection}</p>}</div>
-          <div className="question-upload-response">{item.teacherFeedback ? <><span>老师回复</span><p>{item.teacherFeedback}</p></> : <span>等待老师回复</span>}<StatusPill status={item.status} /></div>
+          <div className="question-upload-response">
+            {item.teacherHint && <><span>老师提示</span><p>{item.teacherHint}</p></>}
+            {item.teacherEvaluation && <><span>老师评价</span><p>{item.teacherEvaluation}</p></>}
+            {!item.teacherHint && !item.teacherEvaluation && item.teacherFeedback && <><span>老师回复</span><p>{item.teacherFeedback}</p></>}
+            {!item.teacherHint && !item.teacherEvaluation && !item.teacherFeedback && <span>等待老师回复</span>}
+            <StatusPill status={item.status} />
+          </div>
         </article>)}</div> : <p className="question-upload-empty">还没有上传记录。</p>}
       </section>}
     </>

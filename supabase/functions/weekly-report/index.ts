@@ -7,6 +7,21 @@ function list(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0).slice(0, 20).map((item) => item.trim().slice(0, 500)) : []
 }
 
+function shanghaiDateKey(value: Date): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(value)
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]))
+  return `${values.year}-${values.month}-${values.day}`
+}
+
+function shanghaiTimestampRange(periodStart: string, periodEnd: string) {
+  const start = new Date(`${periodStart}T00:00:00+08:00`)
+  const endExclusive = new Date(`${periodEnd}T00:00:00+08:00`)
+  endExclusive.setUTCDate(endExclusive.getUTCDate() + 1)
+  return { start: start.toISOString(), endExclusive: endExclusive.toISOString() }
+}
+
 Deno.serve(async (request) => {
   const options = handleOptions(request)
   if (options) return options
@@ -49,12 +64,13 @@ Deno.serve(async (request) => {
       const studentId = requireString(body.studentId, 'studentId', 64)
       const defaultEnd = new Date()
       const defaultStart = new Date(defaultEnd); defaultStart.setDate(defaultStart.getDate() - 6)
-      const periodStart = typeof body.periodStart === 'string' ? body.periodStart.slice(0, 10) : defaultStart.toISOString().slice(0, 10)
-      const periodEnd = typeof body.periodEnd === 'string' ? body.periodEnd.slice(0, 10) : defaultEnd.toISOString().slice(0, 10)
+      const periodStart = typeof body.periodStart === 'string' ? body.periodStart.slice(0, 10) : shanghaiDateKey(defaultStart)
+      const periodEnd = typeof body.periodEnd === 'string' ? body.periodEnd.slice(0, 10) : shanghaiDateKey(defaultEnd)
+      const timestampRange = shanghaiTimestampRange(periodStart, periodEnd)
       const [{ data: evidence }, { data: wrongItems }, { data: tasks }, { data: submissions }, { data: dailyEvaluations }, { data: settings }] = await Promise.all([
-        db.from('learning_evidence').select('*').eq('student_id', studentId).eq('state', 'teacher_verified').gte('created_at', periodStart).lte('created_at', `${periodEnd}T23:59:59Z`),
+        db.from('learning_evidence').select('*').eq('student_id', studentId).eq('state', 'teacher_verified').gte('created_at', timestampRange.start).lt('created_at', timestampRange.endExclusive),
         db.from('wrong_items').select('*').eq('student_id', studentId).eq('evidence_state', 'teacher_verified').gte('occurred_at', periodStart).lte('occurred_at', periodEnd),
-        db.from('review_tasks').select('*').eq('student_id', studentId).gte('created_at', periodStart).lte('created_at', `${periodEnd}T23:59:59Z`),
+        db.from('review_tasks').select('*').eq('student_id', studentId).gte('created_at', timestampRange.start).lt('created_at', timestampRange.endExclusive),
         db.from('submissions').select('id,minutes_spent,self_reflection,confidence,status').eq('student_id', studentId)
           .gte('assignment_date', periodStart).lte('assignment_date', periodEnd),
         db.from('teacher_daily_evaluations').select('evaluation_date,subject,summary,highlights,improvements')

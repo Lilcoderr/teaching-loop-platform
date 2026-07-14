@@ -10,7 +10,7 @@ function materialBody(value: unknown, materialType: string): string {
   if (materialType === 'method' && !content) {
     throw new HttpError(400, 'Method resources require Markdown content', 'method_body_required')
   }
-  return materialType === 'method' ? content : ''
+  return content
 }
 
 function strings(value: unknown, maxItems: number, maxLength: number): string[] {

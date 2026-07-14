@@ -33,7 +33,11 @@ export async function chatCompletion(
   const url = endpoint('/chat/completions', kind)
   const key = configuredValue(kind, 'API_KEY')
   if (!url || !key) return null
-  const model = options.model || Deno.env.get('AI_TEXT_MODEL') || 'deepseek-chat'
+  const configuredModel = kind === 'vision'
+    ? Deno.env.get('AI_VISION_MODEL')?.trim()
+    : Deno.env.get('AI_TEXT_MODEL')?.trim()
+  const model = configuredModel || options.model?.trim() || (kind === 'text' ? 'deepseek-chat' : '')
+  if (!model) return null
   try {
     const response = await fetch(url, {
       method: 'POST',

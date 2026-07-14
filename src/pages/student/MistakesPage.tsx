@@ -1,4 +1,4 @@
-import { CalendarClock, CheckCircle2, ChevronRight, NotebookTabs, RotateCcw } from 'lucide-react'
+import { CalendarClock, CheckCircle2, ChevronRight, LoaderCircle, NotebookTabs, RotateCcw } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { EmptyState } from '../../components/EmptyState'
 import { Modal } from '../../components/Modal'
@@ -13,6 +13,8 @@ export function MistakesPage() {
   const [subject, setSubject] = useState<'all' | Subject>('all')
   const [status, setStatus] = useState<'open' | 'resolved'>('open')
   const [selected, setSelected] = useState<WrongItem | null>(null)
+  const [reviewAction, setReviewAction] = useState<{ taskId: string; passed: boolean } | null>(null)
+  const [reviewError, setReviewError] = useState('')
   const studentId = state.currentUser.id
   const items = useMemo(() => state.wrongItems.filter((item) =>
     item.studentId === studentId &&
@@ -20,7 +22,22 @@ export function MistakesPage() {
     (status === 'resolved' ? item.resolved : !item.resolved),
   ), [state.wrongItems, status, studentId, subject])
 
-  const reviewFor = (wrongItemId: string) => state.reviewTasks.find((task) => task.wrongItemId === wrongItemId && task.status === 'due')
+  const reviewFor = (wrongItemId: string) => state.reviewTasks.find((task) =>
+    task.wrongItemId === wrongItemId && task.status === 'due' && new Date(task.dueAt).getTime() <= Date.now(),
+  )
+
+  const submitReview = async (taskId: string, passed: boolean) => {
+    if (reviewAction) return
+    setReviewAction({ taskId, passed })
+    setReviewError('')
+    try {
+      await completeReview(taskId, passed)
+    } catch (reason) {
+      setReviewError(reason instanceof Error ? reason.message : '复习结果保存失败，请稍后重试')
+    } finally {
+      setReviewAction(null)
+    }
+  }
 
   return (
     <>
@@ -37,6 +54,7 @@ export function MistakesPage() {
           <option value="chemistry">化学</option>
         </select>
       </div>
+      {reviewError && <p className="form-error" role="alert">{reviewError}</p>}
 
       {items.length ? (
         <div className="mistake-grid">
@@ -55,8 +73,8 @@ export function MistakesPage() {
                   <div className="mistake-review-bar">
                     <span><CalendarClock size={15} />今天到期</span>
                     <div>
-                      <button type="button" className="button small" onClick={() => void completeReview(review.id, false)}><RotateCcw size={14} />仍不熟</button>
-                      <button type="button" className="button primary small" onClick={() => void completeReview(review.id, true)}><CheckCircle2 size={14} />已掌握</button>
+                      <button type="button" className="button small" disabled={Boolean(reviewAction)} onClick={() => void submitReview(review.id, false)}>{reviewAction?.taskId === review.id && !reviewAction.passed ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={14} />}仍不熟</button>
+                      <button type="button" className="button primary small" disabled={Boolean(reviewAction)} onClick={() => void submitReview(review.id, true)}>{reviewAction?.taskId === review.id && reviewAction.passed ? <LoaderCircle className="spin" size={14} /> : <CheckCircle2 size={14} />}已掌握</button>
                     </div>
                   </div>
                 )}
