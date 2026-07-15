@@ -89,6 +89,39 @@ p {
   color: var(--ink-soft);
 }
 
+.app-loading.route-loading {
+  min-height: clamp(180px, 55dvh, 480px);
+}
+
+.initial-sync-state strong { color: var(--ink); font-size: 18px; }
+.initial-sync-state span { max-width: 420px; color: var(--ink-faint); font-size: 14px; text-align: center; }
+.initial-sync-failure .button { min-width: 126px; justify-content: center; }
+
+.route-error {
+  min-height: clamp(240px, 55dvh, 520px);
+  padding: 28px 18px;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  color: var(--ink-soft);
+  text-align: center;
+}
+
+.route-error-mark {
+  width: 48px;
+  height: 48px;
+  margin-bottom: 14px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+
+.route-error h2 { margin-bottom: 7px; font-size: 20px; }
+.route-error p { max-width: 460px; margin-bottom: 18px; color: var(--ink-faint); }
+.route-error-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+
 .spin {
   animation: spin 0.85s linear infinite;
 }

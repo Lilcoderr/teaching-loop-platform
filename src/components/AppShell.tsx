@@ -21,12 +21,14 @@ import {
   Users,
 } from 'lucide-react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { Suspense, type FormEvent, useState } from 'react'
+import { Suspense, type FormEvent, useEffect, useRef, useState } from 'react'
 import { usePlatform } from '../context/PlatformContext'
+import { revealActiveMobileNav } from '../lib/mobileNavigation'
 import type { Role } from '../types/domain'
 import { Avatar } from './Avatar'
 import { Brand } from './Brand'
 import { Modal } from './Modal'
+import { RouteErrorBoundary } from './RouteErrorBoundary'
 
 const roleLabels: Record<Role, string> = { teacher: '教师端', student: '学生端', parent: '家长端' }
 
@@ -54,13 +56,20 @@ const navByRole = {
 } as const
 
 export function AppShell() {
-  const { state, demoMode, switchDemoUser, signOut, syncError, refresh } = usePlatform()
+  const { state, demoMode, switchDemoUser, signOut, initialSyncPending, initialDataReady, syncError, refresh } = usePlatform()
   const navigate = useNavigate()
   const location = useLocation()
   const role = state.currentUser.role
   const items = navByRole[role]
   const [passwordOpen, setPasswordOpen] = useState(false)
   const [syncRetrying, setSyncRetrying] = useState(false)
+  const mobileNavRef = useRef<HTMLElement>(null)
+
+  useEffect(() => {
+    const nav = mobileNavRef.current
+    if (!nav || typeof window.matchMedia !== 'function') return
+    revealActiveMobileNav(nav, window.matchMedia('(max-width: 760px)').matches)
+  }, [location.pathname, role])
 
   const retrySync = async () => {
     if (syncRetrying) return
@@ -118,15 +127,30 @@ export function AppShell() {
             <button type="button" className="icon-button mobile-signout" onClick={() => void signOut()} title="退出登录"><LogOut size={17} /></button>
           </div>
         </header>
-        {syncError && <div className="sync-error-banner" role="alert"><AlertTriangle size={18} /><span>{syncError}</span><button type="button" onClick={() => void retrySync()} disabled={syncRetrying}><RefreshCw className={syncRetrying ? 'spin' : undefined} size={16} />重试</button></div>}
+        {syncError && initialDataReady && <div className="sync-error-banner" role="alert"><AlertTriangle size={18} /><span>{syncError}</span><button type="button" onClick={() => void retrySync()} disabled={syncRetrying}><RefreshCw className={syncRetrying ? 'spin' : undefined} size={16} />重试</button></div>}
         <main key={location.pathname} className="main-content">
-          <Suspense fallback={<div className="app-loading"><LoaderCircle className="spin" size={28} /><span>正在打开页面</span></div>}>
-            <Outlet />
-          </Suspense>
+          {initialSyncPending
+            ? <div className="app-loading route-loading initial-sync-state" role="status" aria-live="polite"><LoaderCircle className="spin" size={28} /><strong>正在同步学习数据</strong><span>账号已登录，完成后会自动显示最新内容。</span></div>
+            : !initialDataReady
+              ? (
+                  <section className="route-error initial-sync-failure" role="alert">
+                    <span className="route-error-mark"><AlertTriangle size={24} /></span>
+                    <h2>首次数据同步失败</h2>
+                    <p>{syncError || '暂时无法读取学习数据，请重新同步。'}</p>
+                    <button type="button" className="button primary" onClick={() => void retrySync()} disabled={syncRetrying}><RefreshCw className={syncRetrying ? 'spin' : undefined} size={16} />{syncRetrying ? '正在重试' : '重新同步'}</button>
+                  </section>
+                )
+            : (
+                <RouteErrorBoundary>
+                  <Suspense fallback={<div className="app-loading route-loading"><LoaderCircle className="spin" size={28} /><span>正在打开页面</span></div>}>
+                    <Outlet />
+                  </Suspense>
+                </RouteErrorBoundary>
+              )}
         </main>
       </div>
 
-      <nav className="mobile-nav" aria-label="移动端导航">
+      <nav ref={mobileNavRef} className="mobile-nav" aria-label="移动端导航">
         {items.map(({ to, label, icon: Icon, ...rest }) => (
           <NavLink key={to} to={to} end={'end' in rest ? rest.end : false} className={({ isActive }) => (isActive ? 'active' : '')}>
             <Icon size={20} /><span>{label}</span>

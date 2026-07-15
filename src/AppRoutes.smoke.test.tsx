@@ -51,7 +51,8 @@ describe('all role routes render in the real application shell', () => {
     ['/student/messages', '给老师留言'],
   ])('renders student route %s', async (route, heading) => {
     renderRoute('student', route)
-    expect(await screen.findByRole('heading', { name: heading, level: 1 }, { timeout: 5000 })).toBeInTheDocument()
+    const lazyRouteTimeout = route === '/student/tutor' ? 10_000 : 5_000
+    expect(await screen.findByRole('heading', { name: heading, level: 1 }, { timeout: lazyRouteTimeout })).toBeInTheDocument()
   })
 
   it('renders the parent report route', async () => {

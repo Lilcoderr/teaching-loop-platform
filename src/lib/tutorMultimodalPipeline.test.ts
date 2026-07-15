@@ -23,6 +23,9 @@ describe('tutor multimodal pipeline', () => {
 
   it('locks lower levels to JSON scaffold selection and withholds inline source excerpts', () => {
     expect(tutorFunction).toContain("json: hintLevel !== 'solution'")
+    expect(tutorFunction).toContain('"focusCodes":["分类代码"]')
+    expect(tutorFunction).not.toContain('guidance')
+    expect(tutorFunction).toContain("maxOutputTokens: hintLevel === 'solution' ? 1800 : 180")
     expect(tutorFunction).toContain("const exposeCitationExcerpt = hintLevel === 'solution'")
     expect(tutorFunction).toContain("excerpt: exposeCitationExcerpt ? chunk.content.slice(0, 500) : ''")
   })
@@ -30,7 +33,8 @@ describe('tutor multimodal pipeline', () => {
   it('routes source context through the level-aware prompt guard and anchor whitelist', () => {
     expect(tutorFunction).toContain('buildTutorRetrievalPromptBlock(hintLevel, sourceAnchors, contextLines)')
     expect(tutorFunction).toContain('safeLevelAnswer(hintLevel, modelResult.text, hasSources, sourceAnchors)')
-    expect(tutorFunction).toContain('anchorId 只能从 ${sourceAnchors.map((anchor) => anchor.id).join')
+    expect(tutorFunction).toContain('anchorId 必须输出且只能从 ${sourceAnchors.map((anchor) => anchor.id).join')
+    expect(tutorFunction).toContain('${TUTOR_FOCUS_CODES.join')
     expect(tutorFunction).toContain("labels: [item.knowledge_points.join('、'), item.title]")
   })
 
@@ -46,8 +50,8 @@ describe('tutor multimodal pipeline', () => {
     ]
     for (const level of ['diagnose', 'hint', 'key_step'] as const) {
       const prompt = buildTutorRetrievalPromptBlock(level, anchors, sourceBodies)
-      expect(prompt).toContain('[k1] lecture: 数列递推')
-      expect(prompt).toContain('[w1] wrong_item: 递推关系')
+      expect(prompt).toContain('[k1] lecture: 讲义方法 1')
+      expect(prompt).toContain('[w1] wrong_item: 已确认错题 1')
       expect(prompt).toContain('<untrusted_authorized_retrieval_context>')
       for (const body of sourceBodies) expect(prompt).toContain(body)
     }
@@ -62,5 +66,11 @@ describe('tutor multimodal pipeline', () => {
     expect(prompt).toContain('FULL_LECTURE_BODY')
     expect(prompt).toContain('FULL_TEACHER_NOTE')
     expect(prompt).not.toContain('<authorized_retrieval_metadata>')
+  })
+
+  it('sanitizes lower-mode citation metadata while preserving raw solution metadata', () => {
+    expect(tutorFunction.match(/tutorCitationMetadata\(/g)).toHaveLength(3)
+    expect(tutorFunction).toContain('exposeCitationExcerpt ? chunk.heading || chunk.relative_path : chunk.heading')
+    expect(tutorFunction).toContain('exposeCitationExcerpt ? item.teacher_note : `错题 ${item.question_number}`')
   })
 })

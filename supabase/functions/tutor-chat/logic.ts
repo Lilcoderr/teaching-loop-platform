@@ -54,8 +54,22 @@ export interface TutorSourceAnchor {
   sourceType: TutorSourceAnchorType
 }
 
+export interface TutorCitationMetadata {
+  label: string
+  section: string
+}
+
 const SAFE_ANCHOR_ID = /^[kmw][1-9][0-9]?$/
-const ANSWER_SHAPED_LABEL = /(?:答案\s*(?:为|是|[:：])|最终(?:答案|结果|结论)?\s*(?:为|是|[:：])|解得|故选|应选|选择\s*[A-D](?:\b|项)|选项\s*[A-D](?:\b|项)|\\boxed|(?:^|[\s，。；：:])[^，。；：:\s]{1,12}\s*(?:=|≈)\s*(?:[-+]?\d+(?:\.\d+)?|[A-D](?:\b|$)|√|\\(?:sqrt|frac|pi)))/i
+const SOURCE_RESULT_OPERATOR = /(?:=|≈|≠|≤|≥|<|>|∈|∉|\\(?:leq?|geq?|neq|approx|in|notin)\b|(?:不大于|不小于|大于|小于|至少|至多)\s*(?:[-+]?\d|[零〇一二两三四五六七八九十百千万]))/i
+const SOURCE_OPTION_RESULT = /(?:(?:正确|最终)?(?:答案|选项)|正确项|本题|保留|故|应选|选择|选|取).{0,12}?(?:[A-D]\s*项?|第\s*[一二三四1-4]\s*项)|(?:[A-D]\s*项?|第\s*[一二三四1-4]\s*项).{0,8}(?:正确|符合|应选)/i
+const SOURCE_NUMERIC_RANGE = /[\[({｛（【]\s*[\[({｛（【]?\s*[-+]?\d+(?:\.\d+)?\s*[,，]\s*[-+]?\d+(?:\.\d+)?/i
+const SOURCE_NUMERIC_CONCLUSION = /(?:答案|结果|结论|参数(?:范围)?|取值范围|范围|半径|直径|斜率|根|解集|最值).{0,12}(?:锁定在|确定(?:为|是)?|应取|取|等于|为|是|[:：]|\s)\s*(?:[正负]?[-+]?\d|[正负]?[零〇一二两三四五六七八九十百千万]|[A-D]\s*项|[\[({｛（【]|π|√|任意实数|全体实数|无穷|\\(?:frac|sqrt))/i
+const SOURCE_VARIABLE_CONCLUSION = /(?:^|[\s，。；：:])(?:[A-Za-z][A-Za-z0-9_]*|[\u3400-\u9fff]{1,8})\s*(?:应取|取|等于|为|是|大于|小于|不大于|不小于)\s*(?:[正负]?[-+]?\d|[正负]?[零〇一二两三四五六七八九十百千万]|[A-D](?:\s*项)?|\\(?:frac|sqrt))/i
+const SOURCE_ORDINAL_RESULT = /(?:唯一|符合条件|正确).{0,12}(?:第\s*[一二三四1-4]\s*(?:项|个)|[A-D]\s*项?)/i
+const SOURCE_EXPLICIT_SOLUTION = /(?:解得|求得|算得|故选|应选|最终(?:答案|结果|结论)|\\boxed)/i
+const SOURCE_MATH_RESULT = /\\(?:boxed|frac|sqrt)\s*\{?\s*[-+]?\d/i
+const SOURCE_BARE_RESULT = /^\s*(?:[-+]?\d+(?:\.\d+)?|[A-D]\s*项?|√\s*\d+|\\(?:sqrt|frac)\s*\{[^}]+\})\s*$/i
+const SOURCE_PROMPT_INJECTION = /(?:忽略.{0,20}(?:规则|指令|提示)|系统提示|api\s*key|密钥|内部路径|其他学生|https?:\/\/)/i
 
 export function sanitizeTutorSourceLabel(value: unknown): string | null {
   if (typeof value !== 'string') return null
@@ -63,14 +77,56 @@ export function sanitizeTutorSourceLabel(value: unknown): string | null {
     .replace(/[\u0000-\u001F\u007F\u061C\u200B-\u200F\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
-  if (normalized.length < 2 || ANSWER_SHAPED_LABEL.test(normalized)) return null
-  const plain = normalized
-    .replace(/<[^>]*>/g, ' ')
-    .replace(/[`*_#\[\]{}<>|$]/g, ' ')
+  const inspected = normalized
+    .replace(/<\/?[A-Za-z][^>]*>/g, ' ')
+    .replace(/[`*_#|$]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 80)
-  return plain.length >= 2 && !ANSWER_SHAPED_LABEL.test(plain) ? plain : null
+  if (inspected.length < 2) return null
+  if (
+    SOURCE_RESULT_OPERATOR.test(inspected)
+    || SOURCE_OPTION_RESULT.test(inspected)
+    || SOURCE_NUMERIC_RANGE.test(inspected)
+    || SOURCE_NUMERIC_CONCLUSION.test(inspected)
+    || SOURCE_VARIABLE_CONCLUSION.test(inspected)
+    || SOURCE_ORDINAL_RESULT.test(inspected)
+    || SOURCE_EXPLICIT_SOLUTION.test(inspected)
+    || SOURCE_MATH_RESULT.test(inspected)
+    || SOURCE_BARE_RESULT.test(inspected)
+    || SOURCE_PROMPT_INJECTION.test(inspected)
+  ) return null
+  const plain = inspected.replace(/[\[\]{}<>]/g, ' ').replace(/\s+/g, ' ').trim()
+  if (plain.length < 2) return null
+  return plain
+}
+
+export function safeTutorCitationMetadata(
+  label: unknown,
+  section: unknown,
+  fallbackLabel: string,
+  fallbackSection: string,
+): TutorCitationMetadata {
+  return {
+    label: sanitizeTutorSourceLabel(label) ?? fallbackLabel,
+    section: sanitizeTutorSourceLabel(section) ?? fallbackSection,
+  }
+}
+
+export function tutorCitationMetadata(
+  level: StoredHintLevel,
+  label: unknown,
+  section: unknown,
+  fallbackLabel: string,
+  fallbackSection: string,
+): TutorCitationMetadata {
+  if (level !== 'solution') {
+    return { label: fallbackLabel, section: fallbackSection }
+  }
+  return {
+    label: typeof label === 'string' && label.trim() ? label.trim() : fallbackLabel,
+    section: typeof section === 'string' && section.trim() ? section.trim() : fallbackSection,
+  }
 }
 
 export function buildSafeSourceAnchors(
@@ -79,13 +135,23 @@ export function buildSafeSourceAnchors(
 ): TutorSourceAnchor[] {
   const anchors: TutorSourceAnchor[] = []
   const ids = new Set<string>()
+  const typeCounts = new Map<TutorSourceAnchorType, number>()
+  const typeLabels: Record<TutorSourceAnchorType, string> = {
+    lecture: '讲义方法',
+    exercise: '练习资料',
+    solution: '解析资料',
+    method: '方法技巧',
+    wrong_item: '已确认错题',
+  }
   for (const candidate of candidates) {
     if (anchors.length >= Math.min(Math.max(limit, 0), 12)) break
     if (!SAFE_ANCHOR_ID.test(candidate.id) || ids.has(candidate.id)) continue
-    const label = candidate.labels.map(sanitizeTutorSourceLabel).find((item): item is string => Boolean(item))
-    if (!label) continue
+    const hasSafeLabel = candidate.labels.some((label) => sanitizeTutorSourceLabel(label) !== null)
+    if (!hasSafeLabel) continue
+    const ordinal = (typeCounts.get(candidate.sourceType) ?? 0) + 1
+    typeCounts.set(candidate.sourceType, ordinal)
     ids.add(candidate.id)
-    anchors.push({ id: candidate.id, label, sourceType: candidate.sourceType })
+    anchors.push({ id: candidate.id, label: `${typeLabels[candidate.sourceType]} ${ordinal}`, sourceType: candidate.sourceType })
   }
   return anchors
 }
@@ -296,6 +362,56 @@ const SCAFFOLD_ANSWERS: Record<Exclude<StoredHintLevel, 'solution'>, Record<Tuto
 interface TutorScaffoldSelection {
   scaffold: TutorScaffoldCode
   anchorId?: string
+  focusCodes: TutorFocusCode[]
+}
+
+export const TUTOR_FOCUS_CODES = [
+  'locate_blocker',
+  'extract_conditions',
+  'translate_information',
+  'compare_methods',
+  'work_backward',
+  'audit_last_step',
+  'verify_constraints',
+  'transfer_source',
+] as const
+
+export type TutorFocusCode = typeof TUTOR_FOCUS_CODES[number]
+
+const TUTOR_FOCUS_CODE_SET = new Set<string>(TUTOR_FOCUS_CODES)
+const MAX_TUTOR_FOCUS_CODES = 2
+
+const FOCUS_ANSWERS: Record<Exclude<StoredHintLevel, 'solution'>, Record<TutorFocusCode, string>> = {
+  diagnose: {
+    locate_blocker: '先把卡点限定在“看不懂条件、想不到方法、列不出关系、算不下去”中的一类。',
+    extract_conditions: '先确认你能否区分题目直接给出的条件与隐藏限制。',
+    translate_information: '先确认你卡在文字、图形或实验信息中的哪一条转换。',
+    compare_methods: '先确认你是没有候选方法，还是无法判断候选方法的适用条件。',
+    work_backward: '先确认你能否从目标量倒推出一个必须先建立的中间关系。',
+    audit_last_step: '先指出最后一个你确信正确的步骤，卡点就从它的下一步开始定位。',
+    verify_constraints: '先确认你还没有核对的是定义域、范围、单位、方向还是题设限制。',
+    transfer_source: '先确认你是没有识别出资料方法的使用场景，还是不确定它的适用条件。',
+  },
+  hint: {
+    locate_blocker: '先只处理当前最早出现的卡点，不要同时推进后面的计算。',
+    extract_conditions: '把显式条件和隐藏限制分成两列，再圈出直接关联目标量的一项。',
+    translate_information: '把最关键的一条文字、图形或实验信息改写成规范的学科表达。',
+    compare_methods: '列出一个候选方法，并先核对它的适用对象和使用条件。',
+    work_backward: '从目标量倒推一个必要的中间关系，暂时不要展开求值。',
+    audit_last_step: '回到最后一个确认正确的步骤，只检查它到下一步之间改变了什么。',
+    verify_constraints: '按定义域、范围、单位、方向和题设限制的顺序逐项核对。',
+    transfer_source: '先对照资料方法的适用条件，再判断本题已知条件是否具备对应特征。',
+  },
+  key_step: {
+    locate_blocker: '关键是先解决最早的断点，再让后续步骤沿同一条方法链继续。',
+    extract_conditions: '关键是筛出真正参与求解的条件，并区分等价条件与附加限制。',
+    translate_information: '关键是把题目的核心信息转成可检验的学科关系，再核对对象和方向。',
+    compare_methods: '关键是用适用条件排除不匹配的方法，再保留能连接已知与目标的方法链。',
+    work_backward: '关键是从目标倒推所需的中间关系，再检查现有条件能否建立这条关系。',
+    audit_last_step: '关键是从最后一个正确步骤继续等价处理，每次只改变一个环节并同步核对。',
+    verify_constraints: '关键是把候选过程依次放回定义域、范围、单位、方向和题设限制中检验。',
+    transfer_source: '关键是把资料方法的适用条件与本题特征逐项对应，再决定关系建立顺序。',
+  },
 }
 
 function scaffoldSelectionFromModel(value: string): TutorScaffoldSelection | null {
@@ -303,11 +419,18 @@ function scaffoldSelectionFromModel(value: string): TutorScaffoldSelection | nul
     const parsed = JSON.parse(value) as unknown
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
     const row = parsed as Record<string, unknown>
-    if (Object.keys(row).some((key) => key !== 'scaffold' && key !== 'anchorId')) return null
+    if (Object.keys(row).some((key) => key !== 'scaffold' && key !== 'anchorId' && key !== 'focusCodes')) return null
     const code = row.scaffold
     if (typeof code !== 'string' || !SCAFFOLD_CODE_SET.has(code)) return null
     if (row.anchorId !== undefined && typeof row.anchorId !== 'string') return null
-    return { scaffold: code as TutorScaffoldCode, anchorId: row.anchorId }
+    if (!Array.isArray(row.focusCodes) || row.focusCodes.length < 1 || row.focusCodes.length > MAX_TUTOR_FOCUS_CODES) return null
+    if (row.focusCodes.some((focus) => typeof focus !== 'string' || !TUTOR_FOCUS_CODE_SET.has(focus))) return null
+    if (new Set(row.focusCodes).size !== row.focusCodes.length) return null
+    return {
+      scaffold: code as TutorScaffoldCode,
+      anchorId: row.anchorId,
+      focusCodes: row.focusCodes as TutorFocusCode[],
+    }
   } catch {
     return null
   }
@@ -325,8 +448,15 @@ export function safeLevelAnswer(
   if (level === 'solution') return normalized.slice(0, 8000)
   const selection = scaffoldSelectionFromModel(normalized)
   if (!selection) return fallbackAnswer(level, hasSources, firstAnchor)
-  const selectedAnchor = hasSources
-    ? anchors.find((anchor) => anchor.id === selection.anchorId) ?? firstAnchor
+  const selectedAnchor = hasSources && selection.anchorId
+    ? anchors.find((anchor) => anchor.id === selection.anchorId)
     : undefined
-  return `${sourceLead(hasSources, selectedAnchor)}${SCAFFOLD_ANSWERS[level][selection.scaffold]}`
+  if (hasSources && anchors.length > 0 && !selectedAnchor) {
+    return fallbackAnswer(level, true, firstAnchor)
+  }
+  if ((!hasSources || anchors.length === 0) && selection.anchorId !== undefined) {
+    return fallbackAnswer(level, hasSources)
+  }
+  const focusAnswer = selection.focusCodes.map((focus) => FOCUS_ANSWERS[level][focus]).join('\n\n')
+  return `${sourceLead(hasSources, selectedAnchor)}${SCAFFOLD_ANSWERS[level][selection.scaffold]}\n\n${focusAnswer}`
 }

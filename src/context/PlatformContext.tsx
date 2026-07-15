@@ -48,6 +48,10 @@ type SubmissionInput = Pick<
   | 'studentErrorTags'
 >
 
+type UploadProgressCallback = (completed: number, total: number) => void
+
+const MAX_CONCURRENT_UPLOADS = 4
+
 function textLength(value: string) {
   return Array.from(value).length
 }
@@ -84,6 +88,8 @@ interface PlatformContextValue {
   demoMode: boolean
   loading: boolean
   authenticated: boolean
+  initialSyncPending: boolean
+  initialDataReady: boolean
   syncError: string
   activeStudentId?: string
   activeStudent: PlatformState['students'][number] | undefined
@@ -96,7 +102,7 @@ interface PlatformContextValue {
   ) => Promise<void>
   signOut: () => Promise<void>
   changePassword: (currentPassword: string, newPassword: string) => Promise<void>
-  createSubmission: (input: SubmissionInput, files: File[]) => Promise<string>
+  createSubmission: (input: SubmissionInput, files: File[], onProgress?: UploadProgressCallback) => Promise<string>
   approveSubmission: (submissionId: string, tags: ErrorTag[], teacherNote: string, confirmedWrongNumbers?: string[], wrongItemHint?: string) => Promise<void>
   gradeSubmission: (submissionId: string, feedback: string, questionComments: QuestionComment[], score?: number, maxScore?: number) => Promise<void>
   gradeAndApproveSubmission: (submissionId: string, tags: ErrorTag[], feedback: string, questionComments: QuestionComment[], confirmedWrongNumbers: string[], score?: number, maxScore?: number) => Promise<void>
@@ -171,6 +177,8 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<PlatformState>(() => (runtime.demoMode ? loadDemoState() : emptyPlatformState()))
   const [loading, setLoading] = useState(!runtime.demoMode)
   const [authenticated, setAuthenticated] = useState(runtime.demoMode)
+  const [initialSyncPending, setInitialSyncPending] = useState(false)
+  const [initialDataReady, setInitialDataReady] = useState(runtime.demoMode)
   const [syncError, setSyncError] = useState('')
   const authenticatedRef = useRef(runtime.demoMode)
   const loadingRef = useRef(!runtime.demoMode)
@@ -178,6 +186,7 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
   const latestRefreshRequest = useRef(0)
   const lastBootstrapAt = useRef(0)
   const authRefresh = useRef<{ epoch: number; promise: Promise<void> } | null>(null)
+  const optimisticAttachmentUrls = useRef<Map<string, string[]>>(new Map())
   const [activeStudentId, setActiveStudentId] = useState<string | undefined>(() => {
     const user = runtime.demoMode ? loadDemoState().currentUser : undefined
     return user?.role === 'student' ? user.id : demoStudents[0].id
@@ -186,6 +195,15 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
   const setAuthenticatedState = useCallback((value: boolean) => {
     authenticatedRef.current = value
     setAuthenticated(value)
+  }, [])
+
+  const revokeOptimisticAttachmentUrls = useCallback(() => {
+    for (const urls of optimisticAttachmentUrls.current.values()) {
+      for (const url of urls) {
+        if (typeof URL.revokeObjectURL === 'function') URL.revokeObjectURL(url)
+      }
+    }
+    optimisticAttachmentUrls.current.clear()
   }, [])
 
   const refresh = useCallback(async (options: { showLoading?: boolean; rethrow?: boolean } = {}) => {
@@ -200,8 +218,11 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
       const next = await invokeFunction<PlatformState>('bootstrap')
       if (requestEpoch === authEpoch.current && requestId === latestRefreshRequest.current) {
         setState(next)
+        revokeOptimisticAttachmentUrls()
         lastBootstrapAt.current = Date.now()
         setSyncError('')
+        setInitialSyncPending(false)
+        setInitialDataReady(true)
         setAuthenticatedState(true)
         setActiveStudentId((current) => {
           if (next.currentUser.role === 'student') return next.currentUser.id
@@ -210,25 +231,37 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
         })
       }
     } catch (error) {
-      const session = await supabase?.auth.getSession()
+      if (requestEpoch === authEpoch.current && requestId === latestRefreshRequest.current) setInitialSyncPending(false)
+      let session: Awaited<ReturnType<NonNullable<typeof supabase>['auth']['getSession']>> | undefined
+      try {
+        session = await supabase?.auth.getSession()
+      } catch {
+        session = undefined
+      }
       if (requestEpoch === authEpoch.current && requestId === latestRefreshRequest.current) {
+        setInitialSyncPending(false)
         if (!session?.data.session || !authenticatedRef.current) {
           setState(emptyPlatformState())
+          revokeOptimisticAttachmentUrls()
           setActiveStudentId(undefined)
+          setInitialDataReady(false)
           setAuthenticatedState(false)
         } else {
-          setSyncError('平台数据同步失败，当前页面保留了上一次成功加载的内容。')
+          setSyncError('平台数据同步失败，请检查网络后重试。')
           console.error('加载平台数据失败', error)
         }
       }
       if (options.rethrow) throw error
     } finally {
-      if (options.showLoading && requestEpoch === authEpoch.current && requestId === latestRefreshRequest.current) {
-        loadingRef.current = false
-        setLoading(false)
+      if (requestEpoch === authEpoch.current && requestId === latestRefreshRequest.current) {
+        setInitialSyncPending(false)
+        if (options.showLoading) {
+          loadingRef.current = false
+          setLoading(false)
+        }
       }
     }
-  }, [setAuthenticatedState])
+  }, [revokeOptimisticAttachmentUrls, setAuthenticatedState])
 
   const refreshAfterSignIn = useCallback((showLoading = false) => {
     const epoch = authEpoch.current
@@ -253,11 +286,15 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
       }
       loadingRef.current = false
       setLoading(false)
+      setInitialSyncPending(false)
+      setInitialDataReady(false)
       setAuthenticatedState(false)
     }).catch(() => {
       if (cancelled) return
       loadingRef.current = false
       setLoading(false)
+      setInitialSyncPending(false)
+      setInitialDataReady(false)
       setAuthenticatedState(false)
     })
     const subscription = supabase?.auth.onAuthStateChange((event) => {
@@ -265,8 +302,11 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
         authEpoch.current += 1
         authRefresh.current = null
         setState(emptyPlatformState())
+        revokeOptimisticAttachmentUrls()
         setActiveStudentId(undefined)
         setSyncError('')
+        setInitialSyncPending(false)
+        setInitialDataReady(false)
         setAuthenticatedState(false)
         loadingRef.current = false
         setLoading(false)
@@ -281,7 +321,9 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
       cancelled = true
       subscription?.data.subscription.unsubscribe()
     }
-  }, [refresh, refreshAfterSignIn, setAuthenticatedState])
+  }, [refresh, refreshAfterSignIn, revokeOptimisticAttachmentUrls, setAuthenticatedState])
+
+  useEffect(() => () => revokeOptimisticAttachmentUrls(), [revokeOptimisticAttachmentUrls])
 
   useEffect(() => {
     if (runtime.demoMode || !authenticated) return
@@ -324,54 +366,64 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
       const account = state.accounts.find((item) => item.username.toLowerCase() === normalized)
       if (!account || !password) throw new Error('账号或密码不正确')
       setState((previous) => ({ ...previous, currentUser: account }))
+      setInitialDataReady(true)
       setAuthenticatedState(true)
       return
     }
 
-    if (!supabase) throw new Error('Supabase 尚未配置')
-    if (username.includes('@')) {
-      const { error } = await supabase.auth.signInWithPassword({ email: username, password })
-      if (error) throw error
-    } else {
-      const result = await invokeFunction<{ accessToken: string; refreshToken: string }>('username-login', {
-        username,
-        password,
-      })
-      const { error } = await supabase.auth.setSession({
-        access_token: result.accessToken,
-        refresh_token: result.refreshToken,
-      })
-      if (error) throw error
+    setInitialDataReady(false)
+    if (identity) setInitialSyncPending(true)
+    try {
+      if (!supabase) throw new Error('Supabase 尚未配置')
+      if (username.includes('@')) {
+        const { error } = await supabase.auth.signInWithPassword({ email: username, password })
+        if (error) throw error
+      } else {
+        const result = await invokeFunction<{ accessToken: string; refreshToken: string }>('username-login', {
+          username,
+          password,
+        })
+        const { error } = await supabase.auth.setSession({
+          access_token: result.accessToken,
+          refresh_token: result.refreshToken,
+        })
+        if (error) throw error
+      }
+      if (identity) {
+        setSyncError('')
+        setState((previous) => ({
+          ...previous,
+          currentUser: {
+            id: identity.id,
+            role: identity.role,
+            displayName: identity.displayName,
+            username: '',
+            avatarColor: '#64748b',
+          },
+        }))
+        if (identity.role === 'student') setActiveStudentId(identity.id)
+        const bootstrap = refreshAfterSignIn()
+        await Promise.race([
+          bootstrap,
+          new Promise<void>((resolve) => window.setTimeout(resolve, 250)),
+        ])
+        setAuthenticatedState(true)
+        return
+      }
+      await refreshAfterSignIn()
+    } catch (error) {
+      if (identity) setInitialSyncPending(false)
+      throw error
     }
-    if (identity) {
-      setSyncError('')
-      setState((previous) => ({
-        ...previous,
-        currentUser: {
-          id: identity.id,
-          role: identity.role,
-          displayName: identity.displayName,
-          username: '',
-          avatarColor: '#64748b',
-        },
-      }))
-      if (identity.role === 'student') setActiveStudentId(identity.id)
-      const bootstrap = refreshAfterSignIn()
-      await Promise.race([
-        bootstrap,
-        new Promise<void>((resolve) => window.setTimeout(resolve, 250)),
-      ])
-      setAuthenticatedState(true)
-      return
-    }
-    await refreshAfterSignIn()
   }, [refreshAfterSignIn, setAuthenticatedState, state.accounts])
 
   const signOut = useCallback(async () => {
+    setInitialSyncPending(false)
     if (runtime.demoMode) {
       setAuthenticatedState(false)
       return
     }
+    setInitialDataReady(false)
     await supabase?.auth.signOut()
   }, [setAuthenticatedState])
 
@@ -393,7 +445,7 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
     }))
   }, [refresh])
 
-  const createSubmission = useCallback(async (input: SubmissionInput, files: File[]) => {
+  const createSubmission = useCallback(async (input: SubmissionInput, files: File[], onProgress?: UploadProgressCallback) => {
     const submissionId = uniqueId('submission')
     const studentId = state.currentUser.role === 'student' ? state.currentUser.id : activeStudentId
     if (!studentId) throw new Error('未选择学生')
@@ -420,6 +472,19 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
       reviewStage: 0,
       resolved: false,
     }))
+    const createPreviewAttachments = (idPrefix: string) => {
+      const attachments = files.map((file) => ({
+        id: uniqueId(idPrefix),
+        name: file.name,
+        mimeType: file.type,
+        size: file.size,
+        previewUrl: file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined,
+      }))
+      const previewUrls = attachments.flatMap((attachment) => attachment.previewUrl ? [attachment.previewUrl] : [])
+      if (previewUrls.length) optimisticAttachmentUrls.current.set(submissionId, previewUrls)
+      return attachments
+    }
+    onProgress?.(0, files.length)
 
     if (!runtime.demoMode && supabase) {
       const client = supabase
@@ -451,43 +516,63 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
           storage_path: string
           page_order: number
         }> = []
-        const uploadErrors = await Promise.all(files.map(async (file, pageOrder) => {
-          try {
-            const attachmentId = uniqueId('attachment')
-            const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_')
-            const storagePath = `${studentId}/${submissionId}/${attachmentId}-${safeName}`
-            const { error: uploadError } = await client.storage.from('submissions').upload(storagePath, file)
-            if (uploadError) throw uploadError
-            uploadedPaths.push(storagePath)
-            attachmentRows[pageOrder] = {
-              id: attachmentId,
-              submission_id: submissionId,
-              student_id: studentId,
-              file_name: file.name,
-              mime_type: file.type,
-              file_size: file.size,
-              storage_path: storagePath,
-              page_order: pageOrder,
+        let nextUploadIndex = 0
+        let completedUploads = 0
+        const workers = Array.from(
+          { length: Math.min(MAX_CONCURRENT_UPLOADS, files.length) },
+          async () => {
+            const workerErrors: unknown[] = []
+            while (nextUploadIndex < files.length) {
+              const pageOrder = nextUploadIndex
+              nextUploadIndex += 1
+              const file = files[pageOrder]
+              try {
+                const attachmentId = uniqueId('attachment')
+                const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_')
+                const storagePath = `${studentId}/${submissionId}/${attachmentId}-${safeName}`
+                const { error: uploadError } = await client.storage.from('submissions').upload(storagePath, file)
+                if (uploadError) throw uploadError
+                uploadedPaths.push(storagePath)
+                attachmentRows[pageOrder] = {
+                  id: attachmentId,
+                  submission_id: submissionId,
+                  student_id: studentId,
+                  file_name: file.name,
+                  mime_type: file.type,
+                  file_size: file.size,
+                  storage_path: storagePath,
+                  page_order: pageOrder,
+                }
+              } catch (error) {
+                workerErrors.push(error)
+              } finally {
+                completedUploads += 1
+                onProgress?.(completedUploads, files.length)
+              }
             }
-            return undefined
-          } catch (error) {
-            return error
-          }
-        }))
+            return workerErrors
+          },
+        )
+        const uploadErrors = (await Promise.all(workers)).flat()
         const failedUpload = uploadErrors.find((error) => error !== undefined)
         if (failedUpload !== undefined) throw failedUpload
         const { error: attachmentError } = await client.from('submission_attachments').insert(attachmentRows)
         if (attachmentError) throw attachmentError
       } catch (error) {
-        const cleanupFailures: string[] = []
         if (uploadedPaths.length) {
+          let storageCleanupError: unknown
           try {
             const { error: removeError } = await client.storage.from('submissions').remove(uploadedPaths)
-            if (removeError) cleanupFailures.push('附件清理失败')
-          } catch {
-            cleanupFailures.push('附件清理失败')
+            storageCleanupError = removeError ?? undefined
+          } catch (cleanupError) {
+            storageCleanupError = cleanupError
+          }
+          if (storageCleanupError) {
+            console.error('上传失败后的附件清理未完成', { submissionId, uploadedPaths, cause: error, cleanupError: storageCleanupError })
+            throw new Error(`提交未完整完成，附件清理失败。提交编号 ${submissionId} 已保留，便于追踪附件。请刷新上传记录；若记录已经出现，请勿重复提交。`)
           }
         }
+        const cleanupFailures: string[] = []
         try {
           const { error: deleteError } = await client.from('submissions').delete().eq('id', submissionId).eq('status', 'uploaded')
           if (deleteError) cleanupFailures.push('提交记录清理失败')
@@ -500,19 +585,14 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
         }
         throw error
       }
+      const optimisticAttachments = createPreviewAttachments('attachment-preview')
       const optimisticSubmission: Submission = {
         id: submissionId,
         studentId,
         ...input,
         submittedAt: new Date().toISOString(),
         status: 'uploaded',
-        attachments: files.map((file) => ({
-          id: uniqueId('attachment-preview'),
-          name: file.name,
-          mimeType: file.type,
-          size: file.size,
-          previewUrl: file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined,
-        })),
+        attachments: optimisticAttachments,
       }
       setState((previous) => ({
         ...previous,
@@ -547,14 +627,9 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
       ...input,
       submittedAt: new Date().toISOString(),
       status: state.settings.aiEnabled ? 'analyzing' : 'needs_review',
-      attachments: files.map((file) => ({
-        id: uniqueId('attachment'),
-        name: file.name,
-        mimeType: file.type,
-        size: file.size,
-        previewUrl: file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined,
-      })),
+      attachments: createPreviewAttachments('attachment'),
     }
+    onProgress?.(files.length, files.length)
     setState((previous) => ({
       ...previous,
       submissions: [submission, ...previous.submissions],
@@ -1293,8 +1368,11 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
     const next = cloneDemoState()
     localStorage.removeItem(STORAGE_KEY)
     setState(next)
+    revokeOptimisticAttachmentUrls()
+    setInitialSyncPending(false)
+    setInitialDataReady(true)
     setActiveStudentId(next.students[0].id)
-  }, [])
+  }, [revokeOptimisticAttachmentUrls])
 
   const activeStudent = state.students.find((student) => student.id === activeStudentId)
   const value = useMemo<PlatformContextValue>(() => ({
@@ -1302,6 +1380,8 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
     demoMode: runtime.demoMode,
     loading,
     authenticated,
+    initialSyncPending,
+    initialDataReady,
     syncError,
     activeStudentId,
     activeStudent,
@@ -1338,6 +1418,8 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
     state,
     loading,
     authenticated,
+    initialSyncPending,
+    initialDataReady,
     syncError,
     activeStudentId,
     activeStudent,

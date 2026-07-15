@@ -10,7 +10,9 @@ import {
   safeLevelAnswer,
   selectRelevantChunks,
   selectRelevantWrongItems,
+  TUTOR_FOCUS_CODES,
   TUTOR_SCAFFOLD_CODES,
+  tutorCitationMetadata,
   validateTutorImage,
   type KnowledgeChunkCandidate,
   type StoredHintLevel,
@@ -252,8 +254,8 @@ Deno.serve(async (request) => {
     if (aiAllowed && (!image || imageTranscriptionResult)) {
       const retrievalPromptBlock = buildTutorRetrievalPromptBlock(hintLevel, sourceAnchors, contextLines)
       const lowerModeOutputRule = sourceAnchors.length
-        ? `只输出严格 JSON：{"scaffold":"代码","anchorId":"来源ID"}。代码只能从 ${TUTOR_SCAFFOLD_CODES.join(', ')} 中选择；anchorId 只能从 ${sourceAnchors.map((anchor) => anchor.id).join(', ')} 中选择，也可以省略；不得输出题目答案、公式、解释或其他字段。`
-        : `只输出严格 JSON：{"scaffold":"代码"}。代码只能从 ${TUTOR_SCAFFOLD_CODES.join(', ')} 中选择；不得输出 anchorId、题目答案、公式、解释或其他字段。`
+        ? `只输出严格 JSON：{"scaffold":"代码","anchorId":"来源ID","focusCodes":["分类代码"]}。scaffold 只能从 ${TUTOR_SCAFFOLD_CODES.join(', ')} 中选择；focusCodes 必须包含 1-2 个不重复值，且只能从 ${TUTOR_FOCUS_CODES.join(', ')} 中选择；anchorId 必须输出且只能从 ${sourceAnchors.map((anchor) => anchor.id).join(', ')} 中选择。不得输出任何自然语言、题目答案、推导或其他字段。`
+        : `只输出严格 JSON：{"scaffold":"代码","focusCodes":["分类代码"]}。scaffold 只能从 ${TUTOR_SCAFFOLD_CODES.join(', ')} 中选择；focusCodes 必须包含 1-2 个不重复值，且只能从 ${TUTOR_FOCUS_CODES.join(', ')} 中选择；不得输出 anchorId、任何自然语言、题目答案、推导或其他字段。`
       const userText = [
         '<student_question>',
         message || '请解答图片中已经转录的题目。',
@@ -288,7 +290,7 @@ Deno.serve(async (request) => {
 6. 使用简洁中文；数学表达式使用 LaTeX。
 7. ${hintLevel === 'solution'
   ? '本模式输出自然语言完整解答。'
-  : `本模式可阅读已授权资料来判断学生卡点和最相关来源，但不得输出自然语言答案，只能返回服务端规定的 scaffold 与可选 anchorId；不得生成新的来源 ID、答案或解释。服务端会把选择结果转换成固定教学模板。`}`,
+  : `本模式可阅读已授权资料正文来分类学生卡点和最相关来源，但只能返回服务端规定的 scaffold、focusCodes 与${sourceAnchors.length ? '一个必填的白名单 anchorId' : '不含 anchorId 的结果'}。所有学生可见文字都由服务端固定模板生成；你不得返回任何自然语言、答案、推导或其他字段。`}`,
         },
         { role: 'user', content: userText },
       ]
@@ -297,7 +299,7 @@ Deno.serve(async (request) => {
         kind: 'text',
         json: hintLevel !== 'solution',
         temperature: hintLevel === 'solution' ? 0.2 : 0,
-        maxOutputTokens: hintLevel === 'solution' ? 1800 : 80,
+        maxOutputTokens: hintLevel === 'solution' ? 1800 : 180,
       })
     }
     const unavailableAnswer = !aiAllowed
@@ -320,42 +322,70 @@ Deno.serve(async (request) => {
 
     const exposeCitationExcerpt = hintLevel === 'solution'
     const citations = [
-      ...chunks.map((chunk) => ({
-        tutor_turn_id: assistantTurn.id,
-        student_id: studentId,
-        knowledge_chunk_id: chunk.chunk_id,
-        learning_material_id: null,
-        wrong_item_id: null,
-        label: chunk.title,
-        source_type: chunk.document_type === 'solution' ? 'solution' : chunk.document_type === 'exercise' ? 'exercise' : 'lecture',
-        section: chunk.heading || chunk.relative_path,
-        excerpt: exposeCitationExcerpt ? chunk.content.slice(0, 500) : '',
-        visibility: chunk.visibility,
-      })),
-      ...materials.map((material) => ({
-        tutor_turn_id: assistantTurn.id,
-        student_id: studentId,
-        knowledge_chunk_id: null,
-        learning_material_id: material.id,
-        wrong_item_id: null,
-        label: material.title,
-        source_type: material.material_type === 'lecture' || material.material_type === 'method' ? 'lecture' : 'exercise',
-        section: material.heading,
-        excerpt: exposeCitationExcerpt ? String(material.content).slice(0, 500) : '',
-        visibility: 'student_visible',
-      })),
-      ...wrongItems.map((item) => ({
-        tutor_turn_id: assistantTurn.id,
-        student_id: studentId,
-        knowledge_chunk_id: null,
-        learning_material_id: null,
-        wrong_item_id: item.id,
-        label: `错题 ${item.question_number} · ${item.title}`,
-        source_type: 'wrong_item',
-        section: exposeCitationExcerpt ? item.teacher_note : `错题 ${item.question_number}`,
-        excerpt: exposeCitationExcerpt ? (item.question_text?.slice(0, 500) || item.knowledge_points.join('、')) : '',
-        visibility: 'student_visible',
-      })),
+      ...chunks.map((chunk, index) => {
+        const metadata = tutorCitationMetadata(
+          hintLevel,
+          chunk.title,
+          exposeCitationExcerpt ? chunk.heading || chunk.relative_path : chunk.heading,
+          `已学资料 ${index + 1}`,
+          '相关章节',
+        )
+        return {
+          tutor_turn_id: assistantTurn.id,
+          student_id: studentId,
+          knowledge_chunk_id: chunk.chunk_id,
+          learning_material_id: null,
+          wrong_item_id: null,
+          label: metadata.label,
+          source_type: chunk.document_type === 'solution' ? 'solution' : chunk.document_type === 'exercise' ? 'exercise' : 'lecture',
+          section: metadata.section,
+          excerpt: exposeCitationExcerpt ? chunk.content.slice(0, 500) : '',
+          visibility: chunk.visibility,
+        }
+      }),
+      ...materials.map((material, index) => {
+        const metadata = tutorCitationMetadata(
+          hintLevel,
+          material.title,
+          material.heading,
+          `学习资料 ${index + 1}`,
+          '相关专题',
+        )
+        return {
+          tutor_turn_id: assistantTurn.id,
+          student_id: studentId,
+          knowledge_chunk_id: null,
+          learning_material_id: material.id,
+          wrong_item_id: null,
+          label: metadata.label,
+          source_type: material.material_type === 'lecture' || material.material_type === 'method' ? 'lecture' : 'exercise',
+          section: metadata.section,
+          excerpt: exposeCitationExcerpt ? String(material.content).slice(0, 500) : '',
+          visibility: 'student_visible',
+        }
+      }),
+      ...wrongItems.map((item, index) => {
+        const rawLabel = `错题 ${item.question_number} · ${item.title}`
+        const metadata = tutorCitationMetadata(
+          hintLevel,
+          rawLabel,
+          exposeCitationExcerpt ? item.teacher_note : `错题 ${item.question_number}`,
+          `已确认错题 ${index + 1}`,
+          '历史错题',
+        )
+        return {
+          tutor_turn_id: assistantTurn.id,
+          student_id: studentId,
+          knowledge_chunk_id: null,
+          learning_material_id: null,
+          wrong_item_id: item.id,
+          label: metadata.label,
+          source_type: 'wrong_item',
+          section: metadata.section,
+          excerpt: exposeCitationExcerpt ? (item.question_text?.slice(0, 500) || item.knowledge_points.join('、')) : '',
+          visibility: 'student_visible',
+        }
+      }),
     ]
     if (citations.length) {
       const { error } = await db.from('tutor_citations').insert(citations)

@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { PlatformProvider, usePlatform } from './PlatformContext'
 
 function DemoWrongItemProbe() {
-  const { state, switchDemoUser, createSubmission, approveSubmission, gradeSubmission } = usePlatform()
+  const { state, switchDemoUser, createSubmission, approveSubmission, gradeSubmission, resetDemo } = usePlatform()
   const submission = state.submissions.find((item) => item.title === '演示错题上传')
   const wrongItem = state.wrongItems.find((item) => item.submissionId === submission?.id)
   const reviewCount = state.reviewTasks.filter((item) => item.wrongItemId === wrongItem?.id).length
@@ -22,8 +22,10 @@ function DemoWrongItemProbe() {
         '继续检查取值范围',
         [{ questionNumber: '12', comment: '先检查定义域' }],
       )}>补充提示</button>
+      <button type="button" onClick={resetDemo}>重置演示</button>
       <span data-testid="evidence-state">{wrongItem?.evidenceState ?? ''}</span>
       <span data-testid="submission-status">{submission?.status ?? ''}</span>
+      <span data-testid="submission-preview">{submission?.attachments[0]?.previewUrl ?? ''}</span>
       <span data-testid="wrong-id">{wrongItem?.id ?? ''}</span>
       <span data-testid="teacher-note">{wrongItem?.teacherNote ?? ''}</span>
       <span data-testid="review-count">{reviewCount}</span>
@@ -33,8 +35,18 @@ function DemoWrongItemProbe() {
 
 describe('demo wrong-item business flow', () => {
   beforeEach(() => {
+    vi.restoreAllMocks()
     localStorage.clear()
-    URL.createObjectURL = vi.fn(() => 'blob:demo-question')
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      writable: true,
+      value: vi.fn(() => 'blob:demo-question'),
+    })
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      writable: true,
+      value: vi.fn(),
+    })
   })
 
   it('creates a self-reported item immediately and upgrades that same record after confirmation', async () => {
@@ -60,5 +72,33 @@ describe('demo wrong-item business flow', () => {
     await user.click(screen.getByRole('button', { name: '补充提示' }))
     await waitFor(() => expect(screen.getByTestId('teacher-note')).toHaveTextContent('先检查定义域'))
     expect(screen.getByTestId('teacher-note')).toHaveTextContent('继续检查取值范围')
+  })
+
+  it('revokes a demo preview and removes it from state when demo data resets', async () => {
+    const user = userEvent.setup()
+    render(<PlatformProvider><DemoWrongItemProbe /></PlatformProvider>)
+    await user.click(screen.getByRole('button', { name: '切换学生' }))
+    await user.click(screen.getByRole('button', { name: '上传错题' }))
+    await waitFor(() => expect(screen.getByTestId('submission-status')).toHaveTextContent('needs_review'))
+    expect(screen.getByTestId('submission-preview')).toHaveTextContent('blob:demo-question')
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled()
+
+    await user.click(screen.getByRole('button', { name: '重置演示' }))
+    expect(screen.getByTestId('submission-preview')).toBeEmptyDOMElement()
+    expect(URL.revokeObjectURL).toHaveBeenCalledTimes(1)
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:demo-question')
+  })
+
+  it('revokes a registered demo preview exactly once when the provider unmounts', async () => {
+    const user = userEvent.setup()
+    const view = render(<PlatformProvider><DemoWrongItemProbe /></PlatformProvider>)
+    await user.click(screen.getByRole('button', { name: '切换学生' }))
+    await user.click(screen.getByRole('button', { name: '上传错题' }))
+    await waitFor(() => expect(screen.getByTestId('submission-status')).toHaveTextContent('needs_review'))
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled()
+
+    view.unmount()
+    expect(URL.revokeObjectURL).toHaveBeenCalledTimes(1)
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:demo-question')
   })
 })

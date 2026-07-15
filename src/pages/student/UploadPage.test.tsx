@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Submission } from '../../types/domain'
@@ -88,6 +88,39 @@ describe('student submission upload experience', () => {
     expect(screen.getByLabelText('错题名称')).toHaveValue('椭圆第 12 题')
     expect(screen.getByText('answer.jpg')).toBeInTheDocument()
     expect(screen.queryByText('题目提交成功')).not.toBeInTheDocument()
+  })
+
+  it('shows completed and total files while an upload is in progress', async () => {
+    const user = userEvent.setup()
+    let reportProgress!: (completed: number, total: number) => void
+    let finish!: (value: string) => void
+    mocks.createSubmission.mockImplementationOnce((
+      _input: unknown,
+      _files: File[],
+      onProgress: (completed: number, total: number) => void,
+    ) => {
+      reportProgress = onProgress
+      onProgress(0, 2)
+      return new Promise<string>((resolve) => { finish = resolve })
+    })
+    const { container } = render(<UploadPage />)
+    await user.type(screen.getByLabelText('作业名称'), '进度测试作业')
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')
+    expect(input).not.toBeNull()
+    await user.upload(input!, [
+      new File(['page-1'], 'page-1.jpg', { type: 'image/jpeg' }),
+      new File(['page-2'], 'page-2.jpg', { type: 'image/jpeg' }),
+    ])
+
+    await user.click(screen.getByRole('button', { name: '提交给老师' }))
+    expect(await screen.findByRole('button', { name: '正在上传 0/2' })).toBeDisabled()
+    act(() => reportProgress(1, 2))
+    expect(screen.getByRole('button', { name: '正在上传 1/2' })).toBeDisabled()
+    act(() => reportProgress(2, 2))
+    expect(screen.getByRole('button', { name: '正在上传 2/2' })).toBeDisabled()
+
+    await act(async () => finish('submission-progress'))
+    expect(await screen.findByText('作业提交成功')).toBeInTheDocument()
   })
 
   it('rejects a question number longer than 40 characters before creating the submission', async () => {

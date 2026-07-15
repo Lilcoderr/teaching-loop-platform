@@ -26,10 +26,12 @@ function teacherState(username = 'teacher-demo') {
 }
 
 function ContextProbe() {
-  const { authenticated, refresh, state, syncError } = usePlatform()
+  const { authenticated, initialSyncPending, initialDataReady, refresh, state, syncError } = usePlatform()
   return (
     <>
       <span data-testid="authenticated">{String(authenticated)}</span>
+      <span data-testid="initial-sync-pending">{String(initialSyncPending)}</span>
+      <span data-testid="initial-data-ready">{String(initialDataReady)}</span>
       <span data-testid="username">{state.currentUser.username}</span>
       <span data-testid="sync-error">{syncError}</span>
       <button type="button" onClick={() => void refresh()}>刷新</button>
@@ -76,7 +78,7 @@ describe('production authentication flow', () => {
     authMock.signOut.mockResolvedValue({ error: null })
   })
 
-  it('enters the selected workspace while one shared bootstrap finishes in the background', async () => {
+  it('enters the shell while keeping empty routes unmounted until the shared bootstrap finishes', async () => {
     let bootstrapCalls = 0
     let resolveAuthenticatedBootstrap: ((state: PlatformState) => void) | undefined
     const authenticatedBootstrap = new Promise<PlatformState>((resolve) => {
@@ -112,13 +114,111 @@ describe('production authentication flow', () => {
     fireEvent.click(screen.getByRole('button', { name: '登录' }))
 
     await waitFor(() => expect(bootstrapCalls).toBe(1))
-    expect(await screen.findByRole('heading', { name: '教学概览' }, { timeout: 10_000 })).toBeInTheDocument()
+    expect(await screen.findByText('正在同步学习数据', {}, { timeout: 10_000 })).toBeInTheDocument()
+    expect(screen.getByRole('navigation', { name: '主导航' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '教学概览' })).not.toBeInTheDocument()
     expect(screen.queryByText('正在载入工作台')).not.toBeInTheDocument()
 
     await act(async () => resolveAuthenticatedBootstrap?.(teacherState()))
 
-    expect(await screen.findByRole('heading', { name: '教学概览' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '教学概览' }, { timeout: 10_000 })).toBeInTheDocument()
+    expect(screen.queryByText('正在同步学习数据')).not.toBeInTheDocument()
     expect(invokeFunctionMock.mock.calls.filter(([name]) => name === 'bootstrap')).toHaveLength(1)
+  })
+
+  it('clears the initial sync state when a delayed bootstrap fails', async () => {
+    let rejectAuthenticatedBootstrap: ((error: Error) => void) | undefined
+    const authenticatedBootstrap = new Promise<PlatformState>((_, reject) => {
+      rejectAuthenticatedBootstrap = reject
+    })
+    let resolveRetryBootstrap: ((state: PlatformState) => void) | undefined
+    const retryBootstrap = new Promise<PlatformState>((resolve) => {
+      resolveRetryBootstrap = resolve
+    })
+    let bootstrapCalls = 0
+    authMock.getSession
+      .mockResolvedValueOnce({ data: { session: null } })
+      .mockResolvedValue({ data: { session: { user: { id: 'teacher' } } } })
+    invokeFunctionMock.mockImplementation((name: string, body?: { action?: string }) => {
+      if (name === 'username-login') {
+        if (body?.action === 'list_accounts') return Promise.resolve({ accounts: loginAccounts })
+        return Promise.resolve({ accessToken: 'access-token', refreshToken: 'refresh-token' })
+      }
+      if (name === 'bootstrap') {
+        bootstrapCalls += 1
+        return bootstrapCalls === 1 ? authenticatedBootstrap : retryBootstrap
+      }
+      return Promise.reject(new Error(`Unexpected function: ${name}`))
+    })
+    authMock.setSession.mockImplementation(async () => {
+      authMock.listener?.('SIGNED_IN')
+      return { error: null }
+    })
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    render(
+      <MemoryRouter initialEntries={['/login']}>
+        <PlatformProvider><App /></PlatformProvider>
+      </MemoryRouter>,
+    )
+
+    expect(await screen.findByRole('option', { name: '方老师' })).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'private-password' } })
+    fireEvent.click(screen.getByRole('button', { name: '登录' }))
+    expect(await screen.findByText('正在同步学习数据', {}, { timeout: 10_000 })).toBeInTheDocument()
+
+    await act(async () => rejectAuthenticatedBootstrap?.(new Error('temporary bootstrap failure')))
+
+    expect(await screen.findByRole('heading', { name: '首次数据同步失败' })).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent('平台数据同步失败')
+    expect(screen.queryByText('正在同步学习数据')).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '教学概览' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '重新同步' }))
+    expect(screen.getByRole('button', { name: '正在重试' })).toBeDisabled()
+    expect(screen.queryByRole('heading', { name: '教学概览' })).not.toBeInTheDocument()
+
+    await act(async () => resolveRetryBootstrap?.(teacherState('recovered')))
+    expect(await screen.findByRole('heading', { name: '教学概览' }, { timeout: 10_000 })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '首次数据同步失败' })).not.toBeInTheDocument()
+  })
+
+  it('clears the initial sync state on sign-out and ignores the stale bootstrap', async () => {
+    let resolveAuthenticatedBootstrap: ((state: PlatformState) => void) | undefined
+    const authenticatedBootstrap = new Promise<PlatformState>((resolve) => {
+      resolveAuthenticatedBootstrap = resolve
+    })
+    invokeFunctionMock.mockImplementation((name: string, body?: { action?: string }) => {
+      if (name === 'username-login') {
+        if (body?.action === 'list_accounts') return Promise.resolve({ accounts: loginAccounts })
+        return Promise.resolve({ accessToken: 'access-token', refreshToken: 'refresh-token' })
+      }
+      if (name === 'bootstrap') return authenticatedBootstrap
+      return Promise.reject(new Error(`Unexpected function: ${name}`))
+    })
+    authMock.setSession.mockImplementation(async () => {
+      authMock.listener?.('SIGNED_IN')
+      return { error: null }
+    })
+
+    render(
+      <MemoryRouter initialEntries={['/login']}>
+        <PlatformProvider><App /></PlatformProvider>
+      </MemoryRouter>,
+    )
+
+    expect(await screen.findByRole('option', { name: '方老师' })).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'private-password' } })
+    fireEvent.click(screen.getByRole('button', { name: '登录' }))
+    expect(await screen.findByText('正在同步学习数据', {}, { timeout: 10_000 })).toBeInTheDocument()
+
+    act(() => authMock.listener?.('SIGNED_OUT'))
+    expect(await screen.findByRole('heading', { name: '登录学习工作台' })).toBeInTheDocument()
+    expect(screen.queryByText('正在同步学习数据')).not.toBeInTheDocument()
+
+    await act(async () => resolveAuthenticatedBootstrap?.(teacherState('stale')))
+    expect(screen.getByRole('heading', { name: '登录学习工作台' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '教学概览' })).not.toBeInTheDocument()
   })
 
   it('starts a fresh read for each ordinary refresh and ignores an older response', async () => {
@@ -139,6 +239,7 @@ describe('production authentication flow', () => {
 
     render(<PlatformProvider><ContextProbe /></PlatformProvider>)
     await waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('initial'))
+    expect(screen.getByTestId('initial-data-ready')).toHaveTextContent('true')
 
     await userEvent.click(screen.getByRole('button', { name: '刷新' }))
     await userEvent.click(screen.getByRole('button', { name: '刷新' }))
@@ -194,6 +295,7 @@ describe('production authentication flow', () => {
     await waitFor(() => expect(screen.getByTestId('sync-error')).toHaveTextContent('平台数据同步失败'))
     expect(screen.getByTestId('authenticated')).toHaveTextContent('true')
     expect(screen.getByTestId('username')).toHaveTextContent('initial')
+    expect(screen.getByTestId('initial-data-ready')).toHaveTextContent('true')
 
     await userEvent.click(screen.getByRole('button', { name: '刷新' }))
     await waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('recovered'))

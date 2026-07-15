@@ -26,6 +26,7 @@ function SubmissionUploadPage({ mode }: { mode: UploadMode }) {
   const [reflection, setReflection] = useState('')
   const [tags, setTags] = useState<ErrorTag[]>([])
   const [busy, setBusy] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState<{ completed: number; total: number } | null>(null)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState<{ title: string; fileCount: number } | null>(null)
   const history = state.submissions
@@ -49,6 +50,7 @@ function SubmissionUploadPage({ mode }: { mode: UploadMode }) {
     if (parsedWrongNumbers.length > 50) return setError('一次最多填写 50 个题号')
     const submittedTitle = title.trim()
     const submittedFileCount = files.length
+    setUploadProgress({ completed: 0, total: submittedFileCount })
     setBusy(true)
     try {
       await createSubmission({
@@ -61,7 +63,7 @@ function SubmissionUploadPage({ mode }: { mode: UploadMode }) {
         confidence,
         selfReflection: reflection.trim(),
         studentErrorTags: tags,
-      }, files)
+      }, files, (completed, total) => setUploadProgress({ completed, total }))
       setSuccess({ title: submittedTitle, fileCount: submittedFileCount })
       setFiles([])
       setTitle('')
@@ -74,6 +76,7 @@ function SubmissionUploadPage({ mode }: { mode: UploadMode }) {
       setError(reason instanceof Error ? reason.message : '提交失败，请稍后重试')
     } finally {
       setBusy(false)
+      setUploadProgress(null)
     }
   }
 
@@ -149,7 +152,8 @@ function SubmissionUploadPage({ mode }: { mode: UploadMode }) {
             {error && <p className="form-error full" role="alert">{error}</p>}
             <div className="form-actions full">
               <button className="button primary" type="submit" disabled={busy}>
-                {busy ? <LoaderCircle className="spin" size={17} /> : <Send size={17} />}{busy ? '正在提交' : '提交给老师'}
+                {busy ? <LoaderCircle className="spin" size={17} /> : <Send size={17} />}
+                {busy && uploadProgress ? `正在上传 ${uploadProgress.completed}/${uploadProgress.total}` : busy ? '正在提交' : '提交给老师'}
               </button>
             </div>
           </fieldset>
