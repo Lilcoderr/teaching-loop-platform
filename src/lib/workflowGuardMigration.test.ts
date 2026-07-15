@@ -5,6 +5,10 @@ const migration = readFileSync(
   'supabase/migrations/202607150002_review_schedule_material_citations.sql',
   'utf8',
 )
+const businessMigration = readFileSync(
+  'supabase/migrations/202607150003_wrong_item_business_separation.sql',
+  'utf8',
+)
 const reviewPage = readFileSync('src/pages/teacher/ReviewPage.tsx', 'utf8')
 const platformContext = readFileSync('src/context/PlatformContext.tsx', 'utf8')
 const reviewFunction = readFileSync('supabase/functions/review-submission/index.ts', 'utf8')
@@ -17,17 +21,19 @@ describe('review and material citation migration', () => {
     expect(migration).not.toContain("array['未标注']")
   })
 
-  it('passes only teacher-confirmed assignment numbers through the five-argument approval RPC', () => {
-    expect(reviewPage).toContain('confirmedWrongNumbers.split(')
-    expect(reviewPage).toContain('await approveSubmission(')
-    expect(platformContext).toContain('const normalizedConfirmedWrongNumbers = [...new Set(confirmedWrongNumbers')
-    expect(platformContext).toContain('confirmedWrongNumbers: normalizedConfirmedWrongNumbers')
+  it('passes only teacher-confirmed assignment numbers through the transactional grade-and-approve RPC', () => {
+    expect(reviewPage).toContain('const parsedWrongNumbers = confirmedWrongNumbers')
+    expect(reviewPage).toContain('.split(/[，,、；;\\s]+/)')
+    expect(reviewPage).toContain('await gradeAndApproveSubmission(')
+    expect(platformContext).toContain('const normalizedWrongNumbers = [...new Set(cleanedWrongNumbers)]')
+    expect(platformContext).toContain('confirmedWrongNumbers: normalizedWrongNumbers')
     expect(reviewFunction).toContain('confirmed_wrong_numbers: confirmedWrongNumbers')
-    expect(reviewFunction).toContain("submission.mode !== 'assignment'")
+    expect(reviewFunction).toContain("if (action === 'grade_and_approve')")
     expect(migration).toContain('confirmed_wrong_numbers text[]')
     expect(migration).toContain("if s.mode <> 'assignment' then")
     expect(migration).toContain('for number in select unnest(confirmed_numbers)')
     expect(migration).not.toContain('s.wrong_numbers')
+    expect(businessMigration).toContain('create or replace function public.grade_and_approve_submission(')
   })
 
   it('prevents a review task from being completed before its due time', () => {

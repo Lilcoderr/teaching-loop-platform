@@ -30,22 +30,33 @@ Deno.serve(async (request) => {
     const usernameHash = await sha256(normalizedIdentifier)
     const ipHash = await sha256((request.headers.get('x-forwarded-for')?.split(',')[0] || 'unknown').trim())
     const since = new Date(Date.now() - 15 * 60 * 1000).toISOString()
-    const [{ count: pairFailures }, { count: usernameFailures }, { count: ipFailures }] = await Promise.all([
+    const profileQuery = db.from('profiles').select('id,status')
+    const profilePromise = ACCOUNT_ID.test(identifier)
+      ? profileQuery.eq('id', identifier).maybeSingle()
+      : profileQuery.eq('username', normalizedIdentifier).maybeSingle()
+    const cleanupPromise = db.from('auth_login_attempts').delete()
+      .lt('created_at', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
+    const [pairResult, usernameResult, ipResult, profileResult, cleanupResult] = await Promise.all([
       db.from('auth_login_attempts').select('id', { count: 'exact', head: true })
         .eq('username_hash', usernameHash).eq('ip_hash', ipHash).eq('succeeded', false).gte('created_at', since),
       db.from('auth_login_attempts').select('id', { count: 'exact', head: true })
         .eq('username_hash', usernameHash).eq('succeeded', false).gte('created_at', since),
       db.from('auth_login_attempts').select('id', { count: 'exact', head: true })
         .eq('ip_hash', ipHash).eq('succeeded', false).gte('created_at', since),
+      profilePromise,
+      cleanupPromise,
     ])
+    const rateLimitError = pairResult.error || usernameResult.error || ipResult.error
+    if (rateLimitError) throw rateLimitError
+    if (profileResult.error) throw profileResult.error
+    if (cleanupResult.error) console.error('Login-attempt cleanup failed', cleanupResult.error.message)
+    const pairFailures = pairResult.count
+    const usernameFailures = usernameResult.count
+    const ipFailures = ipResult.count
     if ((pairFailures ?? 0) >= 10 || (usernameFailures ?? 0) >= 15 || (ipFailures ?? 0) >= 50) {
       throw new HttpError(429, '登录尝试过多，请 15 分钟后再试', 'login_rate_limited')
     }
-    await db.from('auth_login_attempts').delete().lt('created_at', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
-    const profileQuery = db.from('profiles').select('id,status')
-    const { data: profile } = ACCOUNT_ID.test(identifier)
-      ? await profileQuery.eq('id', identifier).maybeSingle()
-      : await profileQuery.eq('username', normalizedIdentifier).maybeSingle()
+    const profile = profileResult.data
     if (!profile || profile.status !== 'active') {
       await db.from('auth_login_attempts').insert({ username_hash: usernameHash, ip_hash: ipHash, succeeded: false })
       throw new HttpError(401, '用户名或密码错误', 'invalid_credentials')

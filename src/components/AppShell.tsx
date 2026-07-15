@@ -1,5 +1,6 @@
 import {
   BarChart3,
+  AlertTriangle,
   BookOpenCheck,
   Bot,
   ClipboardCheck,
@@ -10,15 +11,17 @@ import {
   Home,
   Library,
   KeyRound,
+  LoaderCircle,
   LogOut,
   MessageSquare,
   NotebookTabs,
+  RefreshCw,
   Settings,
   ShieldCheck,
   Users,
 } from 'lucide-react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { type FormEvent, useState } from 'react'
+import { Suspense, type FormEvent, useState } from 'react'
 import { usePlatform } from '../context/PlatformContext'
 import type { Role } from '../types/domain'
 import { Avatar } from './Avatar'
@@ -51,12 +54,23 @@ const navByRole = {
 } as const
 
 export function AppShell() {
-  const { state, demoMode, switchDemoUser, signOut } = usePlatform()
+  const { state, demoMode, switchDemoUser, signOut, syncError, refresh } = usePlatform()
   const navigate = useNavigate()
   const location = useLocation()
   const role = state.currentUser.role
   const items = navByRole[role]
   const [passwordOpen, setPasswordOpen] = useState(false)
+  const [syncRetrying, setSyncRetrying] = useState(false)
+
+  const retrySync = async () => {
+    if (syncRetrying) return
+    setSyncRetrying(true)
+    try {
+      await refresh()
+    } finally {
+      setSyncRetrying(false)
+    }
+  }
 
   const changeRole = (nextRole: Role) => {
     switchDemoUser(nextRole)
@@ -104,7 +118,12 @@ export function AppShell() {
             <button type="button" className="icon-button mobile-signout" onClick={() => void signOut()} title="退出登录"><LogOut size={17} /></button>
           </div>
         </header>
-        <main key={location.pathname} className="main-content"><Outlet /></main>
+        {syncError && <div className="sync-error-banner" role="alert"><AlertTriangle size={18} /><span>{syncError}</span><button type="button" onClick={() => void retrySync()} disabled={syncRetrying}><RefreshCw className={syncRetrying ? 'spin' : undefined} size={16} />重试</button></div>}
+        <main key={location.pathname} className="main-content">
+          <Suspense fallback={<div className="app-loading"><LoaderCircle className="spin" size={28} /><span>正在打开页面</span></div>}>
+            <Outlet />
+          </Suspense>
+        </main>
       </div>
 
       <nav className="mobile-nav" aria-label="移动端导航">

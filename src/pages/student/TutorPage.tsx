@@ -78,8 +78,8 @@ async function prepareTutorImage(file: File): Promise<TutorImageInput> {
   context.fillStyle = '#ffffff'
   context.fillRect(0, 0, canvas.width, canvas.height)
   context.drawImage(source, 0, 0, canvas.width, canvas.height)
-  let compressed = await canvasBlob(canvas, 0.82)
-  if (compressed.size > directImageBytes) compressed = await canvasBlob(canvas, 0.68)
+  let compressed = await canvasBlob(canvas, file.size > 8 * 1024 * 1024 ? 0.72 : 0.82)
+  if (compressed.size > 4 * 1024 * 1024) compressed = await canvasBlob(canvas, 0.62)
   if (compressed.size > 4 * 1024 * 1024) throw new Error('图片压缩后仍然过大，请裁剪题目区域后重试。')
   return {
     dataUrl: await readAsDataUrl(compressed),
@@ -105,6 +105,7 @@ export function TutorPage() {
   const [image, setImage] = useState<File | null>(null)
   const [imagePreview, setImagePreview] = useState('')
   const [busy, setBusy] = useState(false)
+  const [busyLabel, setBusyLabel] = useState('正在检索资料并组织回答')
   const [error, setError] = useState('')
   const [selectedCitation, setSelectedCitation] = useState<Citation | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -149,10 +150,12 @@ export function TutorPage() {
       return
     }
     setBusy(true)
+    setBusyLabel(image ? '正在处理题目图片' : '正在检索资料并组织回答')
     setError('')
     const current = message
     try {
       const imagePayload = image ? await prepareTutorImage(image) : undefined
+      setBusyLabel('正在检索资料并组织回答')
       await sendTutorMessage(current, level, attempt, subject, imagePayload)
       setMessage('')
       setAttempt('')
@@ -191,7 +194,7 @@ export function TutorPage() {
               </div>
             </article>
           ))}
-          {busy && <div className="chat-thinking"><LoaderCircle className="spin" size={17} />正在检索讲义和错题</div>}
+          {busy && <div className="chat-thinking"><LoaderCircle className="spin" size={17} />{busyLabel}</div>}
           <div ref={bottomRef} />
         </div>
         <form className="chat-composer" onSubmit={submit}>

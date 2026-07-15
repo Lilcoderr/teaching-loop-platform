@@ -4,16 +4,15 @@ import {
   Check,
   CheckCircle2,
   ClipboardCheck,
-  FileImage,
-  FileText,
   LoaderCircle,
   Search,
   Sparkles,
   XCircle,
 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Navigate, useSearchParams } from 'react-router-dom'
 import { EmptyState } from '../../components/EmptyState'
+import { AttachmentGallery } from '../../components/AttachmentGallery'
 import { Modal } from '../../components/Modal'
 import { PageHeader } from '../../components/PageHeader'
 import { StatusPill } from '../../components/StatusPill'
@@ -22,18 +21,13 @@ import { ERROR_TAG_OPTIONS } from '../../lib/review'
 import { cn, formatDateTime, subjectLabels } from '../../lib/utils'
 import type { ErrorTag, QuestionComment } from '../../types/domain'
 
-const modeLabels = {
-  assignment: '当日作业',
-  wrong_item: '错题 / 不会的题',
-} as const
-
 export function ReviewPage() {
-  const { state, approveSubmission, gradeSubmission, rejectSubmission } = usePlatform()
+  const { state, gradeAndApproveSubmission, rejectSubmission } = usePlatform()
   const [searchParams, setSearchParams] = useSearchParams()
-  const reviewMode = searchParams.get('mode') === 'wrong_item' ? 'wrong_item' : 'assignment'
-  const queue = state.submissions.filter((item) => item.mode === reviewMode && (
-    reviewMode === 'wrong_item' || ['needs_review', 'failed', 'uploaded', 'analyzing'].includes(item.status)
-  ))
+  const legacyWrongMode = searchParams.get('mode') === 'wrong_item'
+  const queue = state.submissions.filter((item) =>
+    item.mode === 'assignment' && ['needs_review', 'failed', 'uploaded', 'analyzing'].includes(item.status),
+  )
   const requestedId = searchParams.get('submission')
   const selectedId = requestedId && queue.some((item) => item.id === requestedId) ? requestedId : queue[0]?.id
   const selected = queue.find((item) => item.id === selectedId) ?? queue[0]
@@ -48,7 +42,6 @@ export function ReviewPage() {
   const [rejectReason, setRejectReason] = useState('图片不清晰，请重新上传完整题面和关键步骤。')
   const [busy, setBusy] = useState(false)
   const [query, setQuery] = useState('')
-  const [feedbackSaved, setFeedbackSaved] = useState(false)
   const [operationError, setOperationError] = useState('')
 
   const filtered = useMemo(() => {
@@ -63,31 +56,34 @@ export function ReviewPage() {
   useEffect(() => {
     setTags(draft?.proposedTags ?? [])
     const comments = selected?.questionComments?.length ? selected.questionComments : draft?.questionComments ?? []
-    setQuestionFeedback(selected?.mode === 'wrong_item'
-      ? (selected.teacherHint ?? '')
-      : comments.map((item) => `第${item.questionNumber}题：${item.comment}`).join('\n'))
-    setOverallFeedback(selected?.mode === 'wrong_item'
-      ? (selected.teacherEvaluation ?? '')
-      : (selected?.teacherFeedback ?? draft?.gradingSummary ?? ''))
+    setQuestionFeedback(comments.map((item) => `第${item.questionNumber}题：${item.comment}`).join('\n'))
+    setOverallFeedback(selected?.teacherFeedback ?? draft?.gradingSummary ?? '')
     setScore(selected?.teacherScore !== undefined ? String(selected.teacherScore) : draft?.proposedScore !== undefined ? String(draft.proposedScore) : '')
     setMaxScore(selected?.maxScore !== undefined ? String(selected.maxScore) : draft?.maxScore !== undefined ? String(draft.maxScore) : '100')
     setConfirmedWrongNumbers('')
-    setFeedbackSaved(false)
     setOperationError('')
   }, [draft, selected])
 
-  const choose = (submissionId: string) => setSearchParams({ mode: reviewMode, submission: submissionId })
+  const choose = (submissionId: string) => setSearchParams({ submission: submissionId })
 
   const moveToNext = (submissionId: string) => {
     const next = queue.find((item) => item.id !== submissionId)
     if (next) choose(next.id)
-    else setSearchParams({ mode: reviewMode })
+    else setSearchParams({})
   }
 
   const gradeInput = () => {
-    const questionComments: QuestionComment[] = questionFeedback.split(/\r?\n/).flatMap((line) => {
+    if (Array.from(questionFeedback).length > 20000) throw new Error('逐题反馈总长度最多 20000 个字符')
+    const lines = questionFeedback.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+    if (lines.length > 100) throw new Error('逐题反馈一次最多填写 100 条')
+    const questionComments: QuestionComment[] = lines.map((line) => {
       const match = line.trim().match(/^(?:第)?([^：:]+)(?:题)?[：:]\s*(.+)$/)
-      return match ? [{ questionNumber: match[1].replace(/题$/, '').trim(), comment: match[2].trim() }] : []
+      if (!match) throw new Error('逐题反馈请按“第 3 题：反馈内容”格式逐行填写')
+      const questionNumber = match[1].replace(/题$/, '').trim()
+      const comment = match[2].trim()
+      if (Array.from(questionNumber).length > 40) throw new Error('逐题反馈中的单个题号最多 40 个字符')
+      if (Array.from(comment).length > 2000) throw new Error('每条逐题反馈最多 2000 个字符')
+      return { questionNumber, comment }
     })
     return {
       questionComments,
@@ -98,17 +94,41 @@ export function ReviewPage() {
 
   const approve = async () => {
     if (!selected || busy || !overallFeedback.trim()) return
-    const { questionComments, numericScore, numericMaxScore } = gradeInput()
+    if (Array.from(overallFeedback.trim()).length > 4000) {
+      setOperationError('总体反馈最多 4000 个字符')
+      return
+    }
+    const parsedWrongNumbers = confirmedWrongNumbers
+      .split(/[，,、；;\s]+/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+    if (parsedWrongNumbers.length > 50) {
+      setOperationError('一次最多确认 50 个错题题号')
+      return
+    }
+    if (parsedWrongNumbers.some((value) => Array.from(value).length > 40)) {
+      setOperationError('单个题号最多 40 个字符，请缩短后再确认')
+      return
+    }
+    let grading: ReturnType<typeof gradeInput>
+    try {
+      grading = gradeInput()
+    } catch (reason) {
+      setOperationError(reason instanceof Error ? reason.message : '逐题反馈格式无效')
+      return
+    }
 
     setBusy(true)
     setOperationError('')
     try {
-      await gradeSubmission(selected.id, overallFeedback.trim(), questionComments, numericScore, numericMaxScore)
-      await approveSubmission(
+      await gradeAndApproveSubmission(
         selected.id,
         tags,
         overallFeedback.trim(),
-        confirmedWrongNumbers.split(/[，,、；;\s]+/).map((item) => item.trim()).filter(Boolean),
+        grading.questionComments,
+        parsedWrongNumbers,
+        grading.numericScore,
+        grading.numericMaxScore,
       )
       moveToNext(selected.id)
     } catch (reason) {
@@ -118,21 +138,12 @@ export function ReviewPage() {
     }
   }
 
-  const sendQuestionFeedback = async () => {
-    if (!selected || busy || !overallFeedback.trim()) return
-    const { questionComments } = gradeInput()
-    setBusy(true)
-    setOperationError('')
-    try {
-      await gradeSubmission(selected.id, overallFeedback.trim(), questionComments)
-      setFeedbackSaved(true)
-    } catch (reason) {
-      setOperationError(reason instanceof Error ? reason.message : '提示发送失败，请稍后重试')
-    } finally { setBusy(false) }
-  }
-
   const reject = async () => {
     if (!selected || busy || !rejectReason.trim()) return
+    if (Array.from(rejectReason.trim()).length > 2000) {
+      setOperationError('退回原因最多 2000 个字符')
+      return
+    }
     setBusy(true)
     setOperationError('')
     try {
@@ -146,13 +157,18 @@ export function ReviewPage() {
     }
   }
 
+  if (legacyWrongMode) {
+    const submissionId = searchParams.get('submission')
+    return <Navigate replace to={`/teacher/wrong-items${submissionId ? `?submission=${encodeURIComponent(submissionId)}` : ''}`} />
+  }
+
   return (
     <>
-      <PageHeader title="作业批改" description={reviewMode === 'assignment' ? 'AI 先完成初步分析，教师核对原始作答后给出最终批改。' : '查看学生上传的错题与不会题，先发送提示，确认后再归档到学生专属错题库。'} actions={<div className="segmented-control"><button type="button" className={reviewMode === 'assignment' ? 'active' : ''} disabled={busy} onClick={() => setSearchParams({ mode: 'assignment' })}>作业</button><button type="button" className={reviewMode === 'wrong_item' ? 'active' : ''} disabled={busy} onClick={() => setSearchParams({ mode: 'wrong_item' })}>错题 / 不会题</button></div>} />
+      <PageHeader title="作业批改" description="这里只处理学生提交的整份作业；错题与不会题请在学生错题库中独立处理。" />
       <div className="review-workspace">
         <aside className="review-inbox panel">
           <div className="review-search"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索学生或作业" /></div>
-          <div className="review-inbox-count">{reviewMode === 'assignment' ? '待批改' : '上传记录'} {filtered.length}</div>
+          <div className="review-inbox-count">待批改 {filtered.length}</div>
           <div className="review-inbox-list">
             {filtered.map((submission) => {
               const student = state.students.find((item) => item.id === submission.studentId)
@@ -160,7 +176,7 @@ export function ReviewPage() {
                 <button type="button" className={cn('review-inbox-item', selected?.id === submission.id && 'active')} onClick={() => choose(submission.id)} disabled={busy} key={submission.id}>
                   <div><strong>{student?.displayName}</strong><span>{formatDateTime(submission.submittedAt)}</span></div>
                   <p>{submission.title}</p>
-                  <span>{modeLabels[submission.mode]} · {subjectLabels[submission.subject]} · {submission.attachments.length} 个文件</span>
+                  <span>当日作业 · {subjectLabels[submission.subject]} · {submission.attachments.length} 个文件</span>
                   <StatusPill status={submission.status} />
                 </button>
               )
@@ -173,7 +189,7 @@ export function ReviewPage() {
             <>
               <div className="review-detail-header">
                 <div>
-                  <span>{state.students.find((item) => item.id === selected.studentId)?.displayName} · {subjectLabels[selected.subject]} · {modeLabels[selected.mode]}</span>
+                  <span>{state.students.find((item) => item.id === selected.studentId)?.displayName} · {subjectLabels[selected.subject]} · 当日作业</span>
                   <h2>{selected.title}</h2>
                   <p>{formatDateTime(selected.submittedAt)} · 用时 {selected.minutesSpent ?? '--'} 分钟 · 题号 {selected.wrongNumbers.join('、') || '未标注'}</p>
                 </div>
@@ -183,18 +199,7 @@ export function ReviewPage() {
               <div className="review-columns">
                 <div className="evidence-column">
                   <h3>学生原始作答</h3>
-                  <div className="attachment-preview-grid">
-                    {selected.attachments.map((file, index) => (
-                      <div className="attachment-preview" key={file.id}>
-                        {file.previewUrl && file.mimeType.startsWith('image/')
-                          ? <img src={file.previewUrl} alt={`${selected.title} 第 ${index + 1} 页`} />
-                          : file.previewUrl
-                            ? <a href={file.previewUrl} target="_blank" rel="noreferrer"><FileText size={28} /><span>打开 PDF</span></a>
-                            : <span>{file.mimeType.startsWith('image/') ? <FileImage size={28} /> : <FileText size={28} />}</span>}
-                        <strong>第 {index + 1} 页</strong><small>{file.name}</small>
-                      </div>
-                    ))}
-                  </div>
+                  <AttachmentGallery attachments={selected.attachments} title={selected.title} />
                   <div className="student-reflection"><span>学生说明</span><p>{selected.selfReflection || '未填写作答说明'}</p></div>
                 </div>
 
@@ -210,11 +215,11 @@ export function ReviewPage() {
                   ) : <div className="draft-unavailable"><AlertTriangle size={18} />AI 初批尚未生成，请教师直接核对原始作答。</div>}
 
                   <div className="teacher-review-form">
-                    <label><BadgeCheck size={16} />{selected.mode === 'assignment' ? '教师最终批改' : '给学生的提示与评价'}</label>
-                    <label className="field"><span>逐题反馈（可选）</span><textarea value={questionFeedback} onChange={(event) => setQuestionFeedback(event.target.value)} placeholder={'例如：\n第 3 题：第二步符号错误，思路正确。\n第 7 题：需要补写定义域。'} /></label>
-                    <label className="field"><span>{selected.mode === 'assignment' ? '总体反馈' : '提示或评价'}</span><textarea value={overallFeedback} onChange={(event) => { setOverallFeedback(event.target.value); setFeedbackSaved(false); setOperationError('') }} placeholder={selected.mode === 'assignment' ? '总结本次完成情况、主要问题和下一步要求……' : '可以只提示关键切入点，不必直接给出完整答案。'} /></label>
-                    {selected.mode === 'assignment' && <div className="grading-score-row"><label className="field"><span>得分（可选）</span><input type="number" min="0" max={maxScore || undefined} inputMode="decimal" value={score} onChange={(event) => setScore(event.target.value)} placeholder="得分" /></label><label className="field"><span>满分</span><input type="number" min="1" inputMode="decimal" value={maxScore} onChange={(event) => setMaxScore(event.target.value)} /></label></div>}
-                    {selected.mode === 'assignment' && <label className="field"><span>确认归入错题库的题号（可选）</span><input value={confirmedWrongNumbers} onChange={(event) => setConfirmedWrongNumbers(event.target.value)} placeholder={selected.wrongNumbers.length ? `学生希望重点批改：${selected.wrongNumbers.join('、')}` : '例如：3, 7；留空表示没有确认错题'} /><small className="field-hint">学生填写的题号仅供参考，只有这里确认的题号才会进入错题库和复习计划。</small></label>}
+                    <label><BadgeCheck size={16} />教师最终批改</label>
+                    <label className="field"><span>逐题反馈（可选）</span><textarea value={questionFeedback} maxLength={20000} onChange={(event) => { setQuestionFeedback(event.target.value); setOperationError('') }} placeholder={'例如：\n第 3 题：第二步符号错误，思路正确。\n第 7 题：需要补写定义域。'} /></label>
+                    <label className="field"><span>总体反馈</span><textarea value={overallFeedback} maxLength={4000} onChange={(event) => { setOverallFeedback(event.target.value); setOperationError('') }} placeholder="总结本次完成情况、主要问题和下一步要求……" /></label>
+                    <div className="grading-score-row"><label className="field"><span>得分（可选）</span><input type="number" min="0" max={maxScore || undefined} inputMode="decimal" value={score} onChange={(event) => setScore(event.target.value)} placeholder="得分" /></label><label className="field"><span>满分</span><input type="number" min="1" inputMode="decimal" value={maxScore} onChange={(event) => setMaxScore(event.target.value)} /></label></div>
+                    <label className="field"><span>确认归入错题库的题号（可选）</span><input value={confirmedWrongNumbers} maxLength={2050} onChange={(event) => { setConfirmedWrongNumbers(event.target.value); setOperationError('') }} placeholder={selected.wrongNumbers.length ? `学生希望重点批改：${selected.wrongNumbers.join('、')}` : '例如：3, 7；留空表示没有确认错题'} /><small className="field-hint">学生填写的题号仅供参考；单个题号最多 40 个字符，最多确认 50 个，只有这里确认的题号才会进入错题库和复习计划。</small></label>
                     <label>确认错因（可选）</label>
                     <div className="check-grid review-tags">
                       {ERROR_TAG_OPTIONS.map((option) => (
@@ -230,8 +235,7 @@ export function ReviewPage() {
 
               <div className="review-footer">
                 <button type="button" className="button danger" onClick={() => setRejectOpen(true)} disabled={busy || selected.status === 'scheduled'}><XCircle size={16} />退回补交</button>
-                {selected.mode === 'wrong_item' && <button type="button" className="button" onClick={() => void sendQuestionFeedback()} disabled={busy || !overallFeedback.trim()}>{feedbackSaved ? <CheckCircle2 size={16} /> : <Sparkles size={16} />}{feedbackSaved ? '提示已发送' : '仅发送提示'}</button>}
-                <button type="button" className="button primary" onClick={() => void approve()} disabled={busy || !overallFeedback.trim() || (selected.mode === 'wrong_item' && selected.status === 'scheduled')}>{busy ? <LoaderCircle className="spin" size={16} /> : <CheckCircle2 size={16} />}{selected.mode === 'wrong_item' ? selected.status === 'scheduled' ? '已归档到错题库' : '一键归档到错题库' : '确认批改并反馈'}</button>
+                <button type="button" className="button primary" onClick={() => void approve()} disabled={busy || !overallFeedback.trim()}>{busy ? <LoaderCircle className="spin" size={16} /> : <CheckCircle2 size={16} />}确认批改并反馈</button>
               </div>
             </>
           )}
@@ -239,7 +243,7 @@ export function ReviewPage() {
       </div>
 
       <Modal open={rejectOpen} title="退回本次作业" onClose={() => { if (!busy) setRejectOpen(false) }} footer={<><button type="button" className="button" onClick={() => setRejectOpen(false)} disabled={busy}>取消</button><button type="button" className="button danger" onClick={() => void reject()} disabled={busy || !rejectReason.trim()}>{busy ? <LoaderCircle className="spin" size={16} /> : null}确认退回</button></>}>
-        <label className="field"><span>需要学生补充的内容</span><textarea value={rejectReason} onChange={(event) => { setRejectReason(event.target.value); setOperationError('') }} disabled={busy} /></label>
+        <label className="field"><span>需要学生补充的内容</span><textarea value={rejectReason} maxLength={2000} onChange={(event) => { setRejectReason(event.target.value); setOperationError('') }} disabled={busy} /></label>
         {operationError && <p className="form-error" role="alert">{operationError}</p>}
       </Modal>
     </>

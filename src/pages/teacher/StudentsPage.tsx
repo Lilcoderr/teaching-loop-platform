@@ -20,7 +20,9 @@ export function StudentsPage() {
   const [evaluationBusy, setEvaluationBusy] = useState(false)
   const [evaluationSaved, setEvaluationSaved] = useState(false)
   const [evaluationError, setEvaluationError] = useState('')
-  const wrongItems = state.wrongItems.filter((item) => item.studentId === activeStudentId)
+  const wrongItems = state.wrongItems.filter((item) =>
+    item.studentId === activeStudentId && item.evidenceState === 'teacher_verified',
+  )
   const openItems = wrongItems.filter((item) => !item.resolved)
   const submissions = state.submissions.filter((item) => item.studentId === activeStudentId)
   const messages = state.messages.filter((item) => item.studentId === activeStudentId)
@@ -155,7 +157,7 @@ export function StudentsPage() {
                 </article>)}</div> : <p className="evaluation-history-empty">暂时没有历史评价。</p>}
               </section>
               <section className="panel"><div className="panel-header"><h2>错因分布</h2></div><div className="panel-body"><MetricBars items={tagBars.length ? tagBars : [{ label: '暂无', value: 0 }]} /></div></section>
-              <section className="panel prep-brief"><div className="panel-header"><h2>备课建议</h2><Bot size={17} /></div><div className="panel-body"><span>基于已确认学情</span><h3>{openItems[0]?.knowledgePoints.join('、') || '等待更多证据'}</h3><p>{openItems[0] ? `优先处理“${errorTagLabels[openItems[0].errorTags[0]]}”类问题，并在完整题目中检查步骤落地。` : '完成首批作业复核后自动形成建议。'}</p></div></section>
+              <section className="panel prep-brief"><div className="panel-header"><h2>备课建议</h2><Bot size={17} /></div><div className="panel-body"><span>基于已确认学情</span><h3>{openItems[0]?.knowledgePoints.join('、') || '等待更多证据'}</h3><p>{openItems[0] ? openItems[0].errorTags[0] ? `优先处理“${errorTagLabels[openItems[0].errorTags[0]]}”类问题，并在完整题目中检查步骤落地。` : '该错题尚未补充错因标签，备课时先核对学生卡点，再从已复核题库选择同类练习。' : '完成首批作业复核后自动形成建议。'}</p></div></section>
             </div>
           </div>
         </>

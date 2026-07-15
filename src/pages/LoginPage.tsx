@@ -79,8 +79,12 @@ export function LoginPage() {
     setBusy(true)
     setError('')
     try {
-      await signIn(selectedAccount.loginIdentifier, password)
-      if (demoMode) navigate('/', { replace: true })
+      await signIn(selectedAccount.loginIdentifier, password, {
+        id: selectedAccount.id,
+        role: selectedAccount.role,
+        displayName: selectedAccount.label,
+      })
+      navigate(selectedAccount.role === 'teacher' ? '/teacher' : selectedAccount.role === 'student' ? '/student' : '/parent', { replace: true })
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '登录失败')
     } finally {

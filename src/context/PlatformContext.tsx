@@ -29,6 +29,7 @@ import type {
   TutorTurn,
   UserProfile,
   WeeklyReport,
+  WrongItem,
 } from '../types/domain'
 
 const STORAGE_KEY = 'teaching-loop-demo-v1'
@@ -47,21 +48,58 @@ type SubmissionInput = Pick<
   | 'studentErrorTags'
 >
 
+function textLength(value: string) {
+  return Array.from(value).length
+}
+
+function validateQuestionComments(questionComments: QuestionComment[]) {
+  if (questionComments.length > 100) throw new Error('逐题反馈一次最多填写 100 条')
+  for (const comment of questionComments) {
+    if (!comment.questionNumber.trim() || textLength(comment.questionNumber.trim()) > 40) {
+      throw new Error('逐题反馈的题号必须为 1 到 40 个字符')
+    }
+    if (!comment.comment.trim() || textLength(comment.comment.trim()) > 2000) {
+      throw new Error('每条逐题反馈必须为 1 到 2000 个字符')
+    }
+  }
+}
+
+function demoTutorTokens(value: string): Set<string> {
+  const normalized = value.toLowerCase()
+  const tokens = new Set(normalized.match(/[a-z0-9]{2,}/g) ?? [])
+  for (const run of normalized.match(/[\p{Script=Han}]{2,}/gu) ?? []) {
+    for (let index = 0; index < run.length - 1; index += 1) tokens.add(run.slice(index, index + 2))
+  }
+  return tokens
+}
+
+function demoTutorMatch(query: string, candidate: string): boolean {
+  const queryTokens = demoTutorTokens(query)
+  const candidateTokens = demoTutorTokens(candidate)
+  return [...queryTokens].some((token) => candidateTokens.has(token))
+}
+
 interface PlatformContextValue {
   state: PlatformState
   demoMode: boolean
   loading: boolean
   authenticated: boolean
+  syncError: string
   activeStudentId?: string
   activeStudent: PlatformState['students'][number] | undefined
   setActiveStudentId: (studentId: string) => void
   switchDemoUser: (role: Role, userId?: string) => void
-  signIn: (username: string, password: string) => Promise<void>
+  signIn: (
+    username: string,
+    password: string,
+    identity?: Pick<UserProfile, 'id' | 'role' | 'displayName'>,
+  ) => Promise<void>
   signOut: () => Promise<void>
   changePassword: (currentPassword: string, newPassword: string) => Promise<void>
   createSubmission: (input: SubmissionInput, files: File[]) => Promise<string>
-  approveSubmission: (submissionId: string, tags: ErrorTag[], teacherNote: string, confirmedWrongNumbers?: string[]) => Promise<void>
+  approveSubmission: (submissionId: string, tags: ErrorTag[], teacherNote: string, confirmedWrongNumbers?: string[], wrongItemHint?: string) => Promise<void>
   gradeSubmission: (submissionId: string, feedback: string, questionComments: QuestionComment[], score?: number, maxScore?: number) => Promise<void>
+  gradeAndApproveSubmission: (submissionId: string, tags: ErrorTag[], feedback: string, questionComments: QuestionComment[], confirmedWrongNumbers: string[], score?: number, maxScore?: number) => Promise<void>
   rejectSubmission: (submissionId: string, reason: string) => Promise<void>
   saveDailyEvaluation: (studentId: string, date: string, summary: string, highlights: string[], improvements: string[], subject?: Subject) => Promise<void>
   createLearningResource: (input: { studentIds: string[]; subject: Subject; topic: string; title: string; resourceType: LearningResourceType; description?: string; body?: string }, files: File[]) => Promise<void>
@@ -133,6 +171,8 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<PlatformState>(() => (runtime.demoMode ? loadDemoState() : emptyPlatformState()))
   const [loading, setLoading] = useState(!runtime.demoMode)
   const [authenticated, setAuthenticated] = useState(runtime.demoMode)
+  const [syncError, setSyncError] = useState('')
+  const authenticatedRef = useRef(runtime.demoMode)
   const loadingRef = useRef(!runtime.demoMode)
   const authEpoch = useRef(0)
   const latestRefreshRequest = useRef(0)
@@ -142,6 +182,11 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
     const user = runtime.demoMode ? loadDemoState().currentUser : undefined
     return user?.role === 'student' ? user.id : demoStudents[0].id
   })
+
+  const setAuthenticatedState = useCallback((value: boolean) => {
+    authenticatedRef.current = value
+    setAuthenticated(value)
+  }, [])
 
   const refresh = useCallback(async (options: { showLoading?: boolean; rethrow?: boolean } = {}) => {
     if (runtime.demoMode) return Promise.resolve()
@@ -156,7 +201,8 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
       if (requestEpoch === authEpoch.current && requestId === latestRefreshRequest.current) {
         setState(next)
         lastBootstrapAt.current = Date.now()
-        setAuthenticated(true)
+        setSyncError('')
+        setAuthenticatedState(true)
         setActiveStudentId((current) => {
           if (next.currentUser.role === 'student') return next.currentUser.id
           if (current && next.students.some((student) => student.id === current)) return current
@@ -166,39 +212,62 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
     } catch (error) {
       const session = await supabase?.auth.getSession()
       if (requestEpoch === authEpoch.current && requestId === latestRefreshRequest.current) {
-        setState(emptyPlatformState())
-        setActiveStudentId(undefined)
-        setAuthenticated(false)
-        if (session?.data.session) console.error('加载平台数据失败', error)
+        if (!session?.data.session || !authenticatedRef.current) {
+          setState(emptyPlatformState())
+          setActiveStudentId(undefined)
+          setAuthenticatedState(false)
+        } else {
+          setSyncError('平台数据同步失败，当前页面保留了上一次成功加载的内容。')
+          console.error('加载平台数据失败', error)
+        }
       }
       if (options.rethrow) throw error
     } finally {
-      if (options.showLoading && requestEpoch === authEpoch.current) {
+      if (options.showLoading && requestEpoch === authEpoch.current && requestId === latestRefreshRequest.current) {
         loadingRef.current = false
         setLoading(false)
       }
     }
-  }, [])
+  }, [setAuthenticatedState])
 
   const refreshAfterSignIn = useCallback((showLoading = false) => {
     const epoch = authEpoch.current
     if (authRefresh.current?.epoch === epoch) return authRefresh.current.promise
     const promise = refresh({ showLoading, rethrow: true })
     authRefresh.current = { epoch, promise }
-    void promise.catch(() => undefined)
+    void promise.then(
+      () => { if (authRefresh.current?.promise === promise) authRefresh.current = null },
+      () => { if (authRefresh.current?.promise === promise) authRefresh.current = null },
+    )
     return promise
   }, [refresh])
 
   useEffect(() => {
     if (runtime.demoMode) return
-    void refresh({ showLoading: true })
+    let cancelled = false
+    void supabase?.auth.getSession().then(({ data }) => {
+      if (cancelled) return
+      if (data.session) {
+        void refreshAfterSignIn(true).catch(() => undefined)
+        return
+      }
+      loadingRef.current = false
+      setLoading(false)
+      setAuthenticatedState(false)
+    }).catch(() => {
+      if (cancelled) return
+      loadingRef.current = false
+      setLoading(false)
+      setAuthenticatedState(false)
+    })
     const subscription = supabase?.auth.onAuthStateChange((event) => {
       if (event === 'SIGNED_OUT') {
         authEpoch.current += 1
         authRefresh.current = null
         setState(emptyPlatformState())
         setActiveStudentId(undefined)
-        setAuthenticated(false)
+        setSyncError('')
+        setAuthenticatedState(false)
         loadingRef.current = false
         setLoading(false)
       }
@@ -208,8 +277,11 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
         void refreshAfterSignIn(loadingRef.current).catch(() => undefined)
       }
     })
-    return () => subscription?.data.subscription.unsubscribe()
-  }, [refresh, refreshAfterSignIn])
+    return () => {
+      cancelled = true
+      subscription?.data.subscription.unsubscribe()
+    }
+  }, [refresh, refreshAfterSignIn, setAuthenticatedState])
 
   useEffect(() => {
     if (runtime.demoMode || !authenticated) return
@@ -242,13 +314,17 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
     if (role === 'parent') setActiveStudentId('student-lin')
   }, [])
 
-  const signIn = useCallback(async (username: string, password: string) => {
+  const signIn = useCallback(async (
+    username: string,
+    password: string,
+    identity?: Pick<UserProfile, 'id' | 'role' | 'displayName'>,
+  ) => {
     if (runtime.demoMode) {
       const normalized = username.trim().toLowerCase()
       const account = state.accounts.find((item) => item.username.toLowerCase() === normalized)
       if (!account || !password) throw new Error('账号或密码不正确')
       setState((previous) => ({ ...previous, currentUser: account }))
-      setAuthenticated(true)
+      setAuthenticatedState(true)
       return
     }
 
@@ -267,16 +343,37 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
       })
       if (error) throw error
     }
+    if (identity) {
+      setSyncError('')
+      setState((previous) => ({
+        ...previous,
+        currentUser: {
+          id: identity.id,
+          role: identity.role,
+          displayName: identity.displayName,
+          username: '',
+          avatarColor: '#64748b',
+        },
+      }))
+      if (identity.role === 'student') setActiveStudentId(identity.id)
+      const bootstrap = refreshAfterSignIn()
+      await Promise.race([
+        bootstrap,
+        new Promise<void>((resolve) => window.setTimeout(resolve, 250)),
+      ])
+      setAuthenticatedState(true)
+      return
+    }
     await refreshAfterSignIn()
-  }, [refreshAfterSignIn, state.accounts])
+  }, [refreshAfterSignIn, setAuthenticatedState, state.accounts])
 
   const signOut = useCallback(async () => {
     if (runtime.demoMode) {
-      setAuthenticated(false)
+      setAuthenticatedState(false)
       return
     }
     await supabase?.auth.signOut()
-  }, [])
+  }, [setAuthenticatedState])
 
   const changePassword = useCallback(async (currentPassword: string, newPassword: string) => {
     if (!currentPassword) throw new Error('请输入当前密码')
@@ -300,9 +397,33 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
     const submissionId = uniqueId('submission')
     const studentId = state.currentUser.role === 'student' ? state.currentUser.id : activeStudentId
     if (!studentId) throw new Error('未选择学生')
+    if (input.wrongNumbers.length > 50) throw new Error('一次最多填写 50 个题号')
+    if (input.wrongNumbers.some((value) => value.trim().length === 0 || Array.from(value.trim()).length > 40)) {
+      throw new Error('单个题号必须为 1 到 40 个字符')
+    }
+    const reportedNumbers = input.mode === 'wrong_item'
+      ? [...new Set((input.wrongNumbers.length ? input.wrongNumbers : ['未标注']).map((item) => item.trim()).filter(Boolean))]
+      : []
+    const selfReportedItems: WrongItem[] = reportedNumbers.map((questionNumber) => ({
+      id: uniqueId('wrong'),
+      studentId,
+      submissionId,
+      subject: input.subject,
+      questionNumber,
+      title: reportedNumbers.length <= 1 ? input.title : `${input.title} · 第${questionNumber}题`,
+      knowledgePoints: [],
+      errorTags: input.studentErrorTags,
+      evidenceState: 'self_reported',
+      teacherNote: '',
+      occurredAt: input.assignmentDate,
+      recurrenceCount: 1,
+      reviewStage: 0,
+      resolved: false,
+    }))
 
     if (!runtime.demoMode && supabase) {
-      const { error: submissionError } = await supabase.from('submissions').insert({
+      const client = supabase
+      const { error: submissionError } = await client.from('submissions').insert({
         id: submissionId,
         student_id: studentId,
         mode: input.mode,
@@ -320,32 +441,103 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
 
       const uploadedPaths: string[] = []
       try {
-        for (const [pageOrder, file] of files.entries()) {
-          const attachmentId = uniqueId('attachment')
-          const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_')
-          const storagePath = `${studentId}/${submissionId}/${attachmentId}-${safeName}`
-          const { error: uploadError } = await supabase.storage.from('submissions').upload(storagePath, file)
-          if (uploadError) throw uploadError
-          uploadedPaths.push(storagePath)
-          const { error: attachmentError } = await supabase.from('submission_attachments').insert({
-            id: attachmentId,
-            submission_id: submissionId,
-            student_id: studentId,
-            file_name: file.name,
-            mime_type: file.type,
-            file_size: file.size,
-            storage_path: storagePath,
-            page_order: pageOrder,
-          })
-          if (attachmentError) throw attachmentError
-        }
+        const attachmentRows: Array<{
+          id: string
+          submission_id: string
+          student_id: string
+          file_name: string
+          mime_type: string
+          file_size: number
+          storage_path: string
+          page_order: number
+        }> = []
+        const uploadErrors = await Promise.all(files.map(async (file, pageOrder) => {
+          try {
+            const attachmentId = uniqueId('attachment')
+            const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_')
+            const storagePath = `${studentId}/${submissionId}/${attachmentId}-${safeName}`
+            const { error: uploadError } = await client.storage.from('submissions').upload(storagePath, file)
+            if (uploadError) throw uploadError
+            uploadedPaths.push(storagePath)
+            attachmentRows[pageOrder] = {
+              id: attachmentId,
+              submission_id: submissionId,
+              student_id: studentId,
+              file_name: file.name,
+              mime_type: file.type,
+              file_size: file.size,
+              storage_path: storagePath,
+              page_order: pageOrder,
+            }
+            return undefined
+          } catch (error) {
+            return error
+          }
+        }))
+        const failedUpload = uploadErrors.find((error) => error !== undefined)
+        if (failedUpload !== undefined) throw failedUpload
+        const { error: attachmentError } = await client.from('submission_attachments').insert(attachmentRows)
+        if (attachmentError) throw attachmentError
       } catch (error) {
-        if (uploadedPaths.length) await supabase.storage.from('submissions').remove(uploadedPaths)
-        await supabase.from('submissions').delete().eq('id', submissionId).eq('status', 'uploaded')
+        const cleanupFailures: string[] = []
+        if (uploadedPaths.length) {
+          try {
+            const { error: removeError } = await client.storage.from('submissions').remove(uploadedPaths)
+            if (removeError) cleanupFailures.push('附件清理失败')
+          } catch {
+            cleanupFailures.push('附件清理失败')
+          }
+        }
+        try {
+          const { error: deleteError } = await client.from('submissions').delete().eq('id', submissionId).eq('status', 'uploaded')
+          if (deleteError) cleanupFailures.push('提交记录清理失败')
+        } catch {
+          cleanupFailures.push('提交记录清理失败')
+        }
+        if (cleanupFailures.length) {
+          console.error('上传失败后的自动清理未完成', { submissionId, cleanupFailures, cause: error })
+          throw new Error(`提交未完整完成，${cleanupFailures.join('、')}。请先刷新上传记录；若记录已经出现，请勿重复提交。`)
+        }
         throw error
       }
-      await invokeFunction('analyze-submission', { submissionId })
-      await refresh()
+      const optimisticSubmission: Submission = {
+        id: submissionId,
+        studentId,
+        ...input,
+        submittedAt: new Date().toISOString(),
+        status: 'uploaded',
+        attachments: files.map((file) => ({
+          id: uniqueId('attachment-preview'),
+          name: file.name,
+          mimeType: file.type,
+          size: file.size,
+          previewUrl: file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined,
+        })),
+      }
+      setState((previous) => ({
+        ...previous,
+        submissions: [optimisticSubmission, ...previous.submissions.filter((item) => item.id !== submissionId)],
+        wrongItems: [
+          ...selfReportedItems,
+          ...previous.wrongItems.filter((item) => item.submissionId !== submissionId),
+        ],
+      }))
+      const analyzeInBackground = async () => {
+        let analysisError: unknown
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          try {
+            await invokeFunction('analyze-submission', { submissionId })
+            analysisError = undefined
+            break
+          } catch (error) {
+            analysisError = error
+            if (attempt === 0) await new Promise((resolve) => window.setTimeout(resolve, 1200))
+          }
+        }
+        if (analysisError) console.error('提交已保存，但后台 AI 初批暂时不可用', analysisError)
+        await refresh()
+      }
+      void analyzeInBackground().catch((error) => console.error('提交状态刷新失败', error))
       return submissionId
     }
 
@@ -363,7 +555,11 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
         previewUrl: file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined,
       })),
     }
-    setState((previous) => ({ ...previous, submissions: [submission, ...previous.submissions] }))
+    setState((previous) => ({
+      ...previous,
+      submissions: [submission, ...previous.submissions],
+      wrongItems: [...selfReportedItems, ...previous.wrongItems],
+    }))
 
     if (state.settings.aiEnabled) {
       await new Promise((resolve) => window.setTimeout(resolve, 700))
@@ -395,16 +591,24 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
     tags: ErrorTag[],
     teacherNote: string,
     confirmedWrongNumbers: string[] = [],
+    wrongItemHint = '',
   ) => {
-    const normalizedConfirmedWrongNumbers = [...new Set(confirmedWrongNumbers
-      .map((value) => value.trim().slice(0, 40))
-      .filter(Boolean))].slice(0, 50)
+    const cleanedConfirmedWrongNumbers = confirmedWrongNumbers.map((value) => value.trim()).filter(Boolean)
+    if (cleanedConfirmedWrongNumbers.length > 50) throw new Error('一次最多确认 50 个错题题号')
+    if (cleanedConfirmedWrongNumbers.some((value) => Array.from(value).length > 40)) {
+      throw new Error('单个题号最多 40 个字符，请缩短后再确认')
+    }
+    const normalizedConfirmedWrongNumbers = [...new Set(cleanedConfirmedWrongNumbers)]
+    const submissionMode = state.submissions.find((item) => item.id === submissionId)?.mode
+    const noteLimit = submissionMode === 'wrong_item' ? 8000 : 4000
+    if (textLength(teacherNote.trim()) > noteLimit) throw new Error(`教师反馈最多 ${noteLimit} 个字符`)
+    if (textLength(wrongItemHint.trim()) > 4000) throw new Error('教师提示最多 4000 个字符')
     if (!runtime.demoMode) {
       const submission = state.submissions.find((item) => item.id === submissionId)
       if (submission?.mode === 'wrong_item') {
         await invokeFunction('review-submission', {
           submissionId, action: 'archive_wrong_item', tags,
-          teacherHint: '', teacherEvaluation: teacherNote,
+          teacherHint: wrongItemHint, teacherEvaluation: teacherNote,
         })
       } else {
         await invokeFunction('review-submission', {
@@ -421,25 +625,38 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
       const wrongNumbers = submission.mode === 'wrong_item'
         ? (submission.wrongNumbers.length ? submission.wrongNumbers : ['未标注'])
         : normalizedConfirmedWrongNumbers
-      const newWrongItems = wrongNumbers.map((questionNumber) => ({
-        id: uniqueId('wrong'),
-        studentId: submission.studentId,
-        submissionId,
-        subject: submission.subject,
-        questionNumber,
-        title: `${submission.title} · 第${questionNumber}题`,
-        knowledgePoints:
-          previous.analysisDrafts.find((draft) => draft.submissionId === submissionId)?.knowledgePoints ?? [],
-        errorTags: tags,
-        evidenceState: 'teacher_verified' as const,
-        teacherNote,
-        occurredAt: submission.assignmentDate,
-        recurrenceCount: 1,
-        reviewStage: 0,
-        nextReviewAt: nextReviewDate(new Date(), 0, false).dueAt,
-        resolved: false,
-      }))
-      const newTasks = newWrongItems.map((item) => ({
+      const draft = previous.analysisDrafts.find((item) => item.submissionId === submissionId)
+      const note = submission.mode === 'wrong_item'
+        ? [wrongItemHint.trim() ? `提示：${wrongItemHint.trim()}` : '', teacherNote.trim() ? `评价：${teacherNote.trim()}` : ''].filter(Boolean).join('\n') || '教师已核对学生原始上传。'
+        : teacherNote
+      const verifiedItems: WrongItem[] = wrongNumbers.map((questionNumber) => {
+        const existing = previous.wrongItems.find((item) =>
+          item.submissionId === submissionId && item.questionNumber === questionNumber,
+        )
+        const alreadyVerified = existing?.evidenceState === 'teacher_verified'
+        return {
+          id: existing?.id ?? uniqueId('wrong'),
+          studentId: submission.studentId,
+          submissionId,
+          subject: submission.subject,
+          questionNumber,
+          title: wrongNumbers.length <= 1 ? submission.title : `${submission.title} · 第${questionNumber}题`,
+          questionText: draft?.questionText ?? existing?.questionText,
+          knowledgePoints: draft?.knowledgePoints.length ? draft.knowledgePoints : existing?.knowledgePoints ?? [],
+          errorTags: tags,
+          evidenceState: 'teacher_verified',
+          teacherNote: note || existing?.teacherNote || '',
+          occurredAt: submission.assignmentDate,
+          recurrenceCount: existing?.recurrenceCount ?? 1,
+          reviewStage: alreadyVerified ? existing.reviewStage : 0,
+          nextReviewAt: alreadyVerified ? existing.nextReviewAt : nextReviewDate(new Date(), 0, false).dueAt,
+          resolved: alreadyVerified ? existing.resolved : false,
+        }
+      })
+      const newTasks = verifiedItems.filter((item) => {
+        const existing = previous.wrongItems.find((candidate) => candidate.id === item.id)
+        return existing?.evidenceState !== 'teacher_verified' && !previous.reviewTasks.some((task) => task.wrongItemId === item.id && task.status === 'due')
+      }).map((item) => ({
         id: uniqueId('review'),
         studentId: item.studentId,
         wrongItemId: item.id,
@@ -453,7 +670,7 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
         submissions: previous.submissions.map((item) =>
           item.id === submissionId ? { ...item, status: wrongNumbers.length ? 'scheduled' : 'approved' } : item,
         ),
-        wrongItems: [...newWrongItems, ...previous.wrongItems],
+        wrongItems: [...verifiedItems, ...previous.wrongItems.filter((item) => !verifiedItems.some((verified) => verified.id === item.id))],
         reviewTasks: [...newTasks, ...previous.reviewTasks],
       }
     })
@@ -466,6 +683,14 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
     score?: number,
     maxScore?: number,
   ) => {
+    const submissionMode = state.submissions.find((item) => item.id === submissionId)?.mode
+    const feedbackLimit = submissionMode === 'wrong_item' ? 8000 : 4000
+    if (textLength(feedback.trim()) > feedbackLimit) throw new Error(`教师反馈最多 ${feedbackLimit} 个字符`)
+    validateQuestionComments(questionComments)
+    if (submissionMode === 'wrong_item') {
+      const hint = questionComments.map((item) => `第${item.questionNumber}题：${item.comment}`).join('\n')
+      if (textLength(hint) > 4000) throw new Error('教师提示最多 4000 个字符')
+    }
     if (!runtime.demoMode) {
       const submission = state.submissions.find((item) => item.id === submissionId)
       if (submission?.mode === 'wrong_item') {
@@ -482,25 +707,123 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
       await refresh()
       return
     }
-    setState((previous) => ({
-      ...previous,
-      submissions: previous.submissions.map((submission) => {
-        if (submission.id !== submissionId) return submission
-        const hint = questionComments.map((item) => `第${item.questionNumber}题：${item.comment}`).join('\n')
-        return submission.mode === 'wrong_item' ? {
-          ...submission,
-          teacherHint: hint || submission.teacherHint,
-          teacherEvaluation: feedback || submission.teacherEvaluation,
-          teacherFeedback: feedback || hint || submission.teacherFeedback,
-          questionComments,
-          gradedAt: new Date().toISOString(),
-        } : {
-          ...submission, teacherFeedback: feedback, questionComments, teacherScore: score,
-          maxScore, gradedAt: new Date().toISOString(),
-        }
-      }),
-    }))
+    setState((previous) => {
+      const hint = questionComments.map((item) => `第${item.questionNumber}题：${item.comment}`).join('\n')
+      const target = previous.submissions.find((submission) => submission.id === submissionId)
+      const nextHint = hint || target?.teacherHint || ''
+      const nextEvaluation = feedback || target?.teacherEvaluation || ''
+      const note = [nextHint ? `提示：${nextHint}` : '', nextEvaluation ? `评价：${nextEvaluation}` : ''].filter(Boolean).join('\n')
+      return {
+        ...previous,
+        submissions: previous.submissions.map((submission) => {
+          if (submission.id !== submissionId) return submission
+          return submission.mode === 'wrong_item' ? {
+            ...submission,
+            teacherHint: nextHint || submission.teacherHint,
+            teacherEvaluation: nextEvaluation || submission.teacherEvaluation,
+            teacherFeedback: nextEvaluation || nextHint || submission.teacherFeedback,
+            questionComments,
+            gradedAt: new Date().toISOString(),
+          } : {
+            ...submission, teacherFeedback: feedback, questionComments, teacherScore: score,
+            maxScore, gradedAt: new Date().toISOString(),
+          }
+        }),
+        wrongItems: target?.mode === 'wrong_item' && note
+          ? previous.wrongItems.map((item) => item.submissionId === submissionId && item.evidenceState === 'teacher_verified'
+            ? { ...item, teacherNote: note }
+            : item)
+          : previous.wrongItems,
+      }
+    })
   }, [refresh, state.submissions])
+
+  const gradeAndApproveSubmission = useCallback(async (
+    submissionId: string,
+    tags: ErrorTag[],
+    feedback: string,
+    questionComments: QuestionComment[],
+    confirmedWrongNumbers: string[],
+    score?: number,
+    maxScore?: number,
+  ) => {
+    const note = feedback.trim()
+    if (!note) throw new Error('请填写总体反馈')
+    if (textLength(note) > 4000) throw new Error('总体反馈最多 4000 个字符')
+    validateQuestionComments(questionComments)
+    const cleanedWrongNumbers = confirmedWrongNumbers.map((value) => value.trim()).filter(Boolean)
+    if (cleanedWrongNumbers.length > 50) throw new Error('一次最多确认 50 个错题题号')
+    if (cleanedWrongNumbers.some((value) => textLength(value) > 40)) {
+      throw new Error('单个题号最多 40 个字符，请缩短后再确认')
+    }
+    const normalizedWrongNumbers = [...new Set(cleanedWrongNumbers)]
+
+    if (!runtime.demoMode) {
+      await invokeFunction('review-submission', {
+        submissionId,
+        action: 'grade_and_approve',
+        tags,
+        feedback: note,
+        questionComments,
+        confirmedWrongNumbers: normalizedWrongNumbers,
+        score: score ?? null,
+        maxScore: maxScore ?? null,
+      })
+      await refresh()
+      return
+    }
+
+    setState((previous) => {
+      const submission = previous.submissions.find((item) => item.id === submissionId)
+      if (!submission || submission.mode !== 'assignment') return previous
+      const draft = previous.analysisDrafts.find((item) => item.submissionId === submissionId)
+      const verifiedItems: WrongItem[] = normalizedWrongNumbers.map((questionNumber) => {
+        const existing = previous.wrongItems.find((item) =>
+          item.submissionId === submissionId && item.questionNumber === questionNumber,
+        )
+        const alreadyVerified = existing?.evidenceState === 'teacher_verified'
+        return {
+          id: existing?.id ?? uniqueId('wrong'),
+          studentId: submission.studentId,
+          submissionId,
+          subject: submission.subject,
+          questionNumber,
+          title: normalizedWrongNumbers.length <= 1 ? submission.title : `${submission.title} · 第${questionNumber}题`,
+          questionText: draft?.questionText ?? existing?.questionText,
+          knowledgePoints: draft?.knowledgePoints.length ? draft.knowledgePoints : existing?.knowledgePoints ?? [],
+          errorTags: tags,
+          evidenceState: 'teacher_verified',
+          teacherNote: note,
+          occurredAt: submission.assignmentDate,
+          recurrenceCount: existing?.recurrenceCount ?? 1,
+          reviewStage: alreadyVerified ? existing.reviewStage : 0,
+          nextReviewAt: alreadyVerified ? existing.nextReviewAt : nextReviewDate(new Date(), 0, false).dueAt,
+          resolved: alreadyVerified ? existing.resolved : false,
+        }
+      })
+      const newTasks = verifiedItems.filter((item) => {
+        const existing = previous.wrongItems.find((candidate) => candidate.id === item.id)
+        return existing?.evidenceState !== 'teacher_verified' && !previous.reviewTasks.some((task) => task.wrongItemId === item.id && task.status === 'due')
+      }).map((item) => ({
+        id: uniqueId('review'), studentId: item.studentId, wrongItemId: item.id,
+        title: `复习：${item.title}`, dueAt: item.nextReviewAt!, stage: 0, status: 'due' as const,
+      }))
+      return {
+        ...previous,
+        submissions: previous.submissions.map((item) => item.id === submissionId ? {
+          ...item,
+          status: normalizedWrongNumbers.length ? 'scheduled' : 'approved',
+          teacherFeedback: note,
+          questionComments,
+          teacherScore: score,
+          maxScore,
+          gradedAt: new Date().toISOString(),
+        } : item),
+        wrongItems: [...verifiedItems, ...previous.wrongItems.filter((item) => !verifiedItems.some((verified) => verified.id === item.id))],
+        reviewTasks: [...newTasks, ...previous.reviewTasks],
+      }
+    })
+  }, [refresh])
 
   const saveDailyEvaluation = useCallback(async (
     studentId: string,
@@ -704,20 +1027,32 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
         document.studentId === studentId &&
         (!subject || document.subject === subject) &&
         document.active &&
-        canUseKnowledgeSource(document.visibility, 'student', level, Boolean(attempt?.trim())),
+        canUseKnowledgeSource(document.visibility, 'student', level, Boolean(attempt?.trim())) &&
+        demoTutorMatch(message, `${document.title}\n${document.relativePath}`),
     ).slice(0, 2)
-    const relatedWrong = state.wrongItems.find((item) => item.studentId === studentId && (!subject || item.subject === subject) && !item.resolved)
+    const relatedWrong = state.wrongItems.find((item) =>
+      item.studentId === studentId &&
+      item.evidenceState === 'teacher_verified' &&
+      (!subject || item.subject === subject) &&
+      demoTutorMatch(message, [item.title, item.questionText, item.knowledgePoints.join(' '), item.teacherNote].filter(Boolean).join('\n')),
+    )
     const citations = [
       ...relatedDocuments.map((document) => ({
         id: document.id,
         label: document.title,
         sourceType: document.documentType === 'solution' ? 'solution' as const : document.documentType === 'exercise' ? 'exercise' as const : 'lecture' as const,
         section: document.documentType === 'solution' ? '经尝试后开放的完整解析' : '与当前问题匹配的方法',
-        excerpt: document.relativePath,
+        excerpt: level === 'solution' ? document.relativePath : undefined,
         visibility: document.visibility,
       })),
       ...(relatedWrong
-        ? [{ id: relatedWrong.id, label: `错题 ${relatedWrong.questionNumber} · ${relatedWrong.title}`, sourceType: 'wrong_item' as const, section: relatedWrong.teacherNote, visibility: 'student_visible' as const }]
+        ? [{
+            id: relatedWrong.id,
+            label: `错题 ${relatedWrong.questionNumber} · ${relatedWrong.title}`,
+            sourceType: 'wrong_item' as const,
+            section: level === 'solution' ? relatedWrong.teacherNote : '教师已确认的同类错题',
+            visibility: 'student_visible' as const,
+          }]
         : []),
     ]
     let responseBody = '我先确认你的卡点：你现在是没有想到第一步，还是已经列式但无法继续？请把已经完成的步骤发给我。'
@@ -733,6 +1068,9 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
       responseBody = attempt?.trim()
         ? '根据你的尝试，完整处理顺序应是：① 写出对象的标准方程；② 设直线并联立；③ 用判别式保证相交；④ 用韦达关系代替直接求根；⑤ 回到题目目标量并检查取值范围。你原来的第二步是对的，主要遗漏在第③步。'
         : '完整解答需要先看到你的尝试。请至少提交一个公式、一个设元或你卡住的具体步骤，我再继续。'
+    }
+    if (citations.length === 0) {
+      responseBody += '\n\n本次未在已学资料中找到对应内容，我先使用通用学科知识回答。'
     }
     const assistantTurn: TutorTurn = {
       id: uniqueId('turn'),
@@ -964,6 +1302,7 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
     demoMode: runtime.demoMode,
     loading,
     authenticated,
+    syncError,
     activeStudentId,
     activeStudent,
     setActiveStudentId,
@@ -974,6 +1313,7 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
     createSubmission,
     approveSubmission,
     gradeSubmission,
+    gradeAndApproveSubmission,
     rejectSubmission,
     saveDailyEvaluation,
     createLearningResource,
@@ -998,6 +1338,7 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
     state,
     loading,
     authenticated,
+    syncError,
     activeStudentId,
     activeStudent,
     switchDemoUser,
@@ -1007,6 +1348,7 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
     createSubmission,
     approveSubmission,
     gradeSubmission,
+    gradeAndApproveSubmission,
     rejectSubmission,
     saveDailyEvaluation,
     createLearningResource,

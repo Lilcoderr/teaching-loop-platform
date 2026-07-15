@@ -6,7 +6,16 @@ import { PageHeader } from '../../components/PageHeader'
 import { ErrorTagPill, LabelTag } from '../../components/Tag'
 import { usePlatform } from '../../context/PlatformContext'
 import { formatShortDate, subjectLabels } from '../../lib/utils'
-import type { Subject, WrongItem } from '../../types/domain'
+import type { Submission, Subject, WrongItem } from '../../types/domain'
+
+function submissionTeacherNote(submission: Submission | undefined) {
+  if (!submission) return ''
+  const note = [
+    submission.teacherHint ? `提示：${submission.teacherHint}` : '',
+    submission.teacherEvaluation ? `评价：${submission.teacherEvaluation}` : '',
+  ].filter(Boolean).join('\n')
+  return note || submission.teacherFeedback || ''
+}
 
 export function MistakesPage() {
   const { state, completeReview } = usePlatform()
@@ -25,6 +34,10 @@ export function MistakesPage() {
   const reviewFor = (wrongItemId: string) => state.reviewTasks.find((task) =>
     task.wrongItemId === wrongItemId && task.status === 'due' && new Date(task.dueAt).getTime() <= Date.now(),
   )
+  const selectedSubmission = selected?.submissionId
+    ? state.submissions.find((submission) => submission.id === selected.submissionId)
+    : undefined
+  const selectedTeacherNote = submissionTeacherNote(selectedSubmission)
 
   const submitReview = async (taskId: string, passed: boolean) => {
     if (reviewAction) return
@@ -41,7 +54,7 @@ export function MistakesPage() {
 
   return (
     <>
-      <PageHeader title="我的错题" description="只记录经老师确认的错因与复习计划。" />
+      <PageHeader title="我的错题" description="主动上传后立即保存；老师确认后会补充错因、建议和复习计划。" />
       <div className="filter-bar">
         <div className="segmented-control">
           <button type="button" className={status === 'open' ? 'active' : ''} onClick={() => setStatus('open')}>待巩固</button>
@@ -60,14 +73,19 @@ export function MistakesPage() {
         <div className="mistake-grid">
           {items.map((item) => {
             const review = reviewFor(item.id)
+            const sourceSubmission = item.submissionId
+              ? state.submissions.find((submission) => submission.id === item.submissionId)
+              : undefined
+            const needsResubmit = sourceSubmission?.status === 'rejected'
+            const teacherNote = submissionTeacherNote(sourceSubmission)
             return (
               <article className="mistake-card" key={item.id}>
                 <button className="mistake-main" type="button" onClick={() => setSelected(item)}>
-                  <div className="mistake-topline"><LabelTag>{subjectLabels[item.subject]}</LabelTag><span>{formatShortDate(item.occurredAt)}</span></div>
+                  <div className="mistake-topline"><LabelTag>{subjectLabels[item.subject]}</LabelTag><span>{item.evidenceState === 'teacher_verified' ? '老师已确认' : needsResubmit ? '需重新上传' : '待老师确认'} · {formatShortDate(item.occurredAt)}</span></div>
                   <h2>{item.title}</h2>
                   <div className="tag-row">{item.errorTags.map((tag) => <ErrorTagPill tag={tag} key={tag} />)}</div>
-                  <p>{item.teacherNote}</p>
-                  <div className="mistake-meta"><span>出现 {item.recurrenceCount} 次</span><span>复习阶段 {item.reviewStage + 1}/4</span><ChevronRight size={16} /></div>
+                  <p>{item.teacherNote || sourceSubmission?.failureReason || teacherNote || '题目已保存，等待老师补充提示或评价。'}</p>
+                  <div className="mistake-meta"><span>出现 {item.recurrenceCount} 次</span><span>{item.evidenceState === 'teacher_verified' ? `复习阶段 ${item.reviewStage + 1}/4` : '尚未安排复习'}</span><ChevronRight size={16} /></div>
                 </button>
                 {review && (
                   <div className="mistake-review-bar">
@@ -82,7 +100,7 @@ export function MistakesPage() {
             )
           })}
         </div>
-      ) : <section className="panel"><EmptyState icon={NotebookTabs} title={status === 'open' ? '当前没有待巩固错题' : '还没有稳定掌握的错题'} detail="老师确认后的错题会出现在这里。" /></section>}
+      ) : <section className="panel"><EmptyState icon={NotebookTabs} title={status === 'open' ? '当前没有待巩固错题' : '还没有稳定掌握的错题'} detail="从“上传错题 / 不会题”提交后会立即保存在这里。" /></section>}
 
       <Modal open={Boolean(selected)} title={selected?.title ?? '错题详情'} onClose={() => setSelected(null)}>
         {selected && (
@@ -90,7 +108,8 @@ export function MistakesPage() {
             <div className="detail-row"><span>题号</span><strong>{selected.questionNumber}</strong></div>
             <div className="detail-row"><span>科目</span><strong>{subjectLabels[selected.subject]}</strong></div>
             <div className="detail-block"><span>知识点</span><div className="tag-row">{selected.knowledgePoints.map((point) => <LabelTag key={point}>{point}</LabelTag>)}</div></div>
-            <div className="detail-block"><span>老师建议</span><p>{selected.teacherNote}</p></div>
+            <div className="detail-row"><span>确认状态</span><strong>{selected.evidenceState === 'teacher_verified' ? '老师已确认' : selectedSubmission?.status === 'rejected' ? '需重新上传' : '待老师确认'}</strong></div>
+            <div className="detail-block"><span>老师建议</span><p>{selected.teacherNote || selectedSubmission?.failureReason || selectedTeacherNote || '老师尚未补充建议。'}</p></div>
             <div className="detail-block"><span>错因</span><div className="tag-row">{selected.errorTags.map((tag) => <ErrorTagPill tag={tag} key={tag} />)}</div></div>
             {selected.nextReviewAt && <div className="detail-row"><span>下次复习</span><strong>{formatShortDate(selected.nextReviewAt)}</strong></div>}
           </div>

@@ -268,7 +268,7 @@ export const demoState: PlatformState = {
       id: 'doc-001',
       studentId: 'student-lin',
       subject: 'math',
-      title: '第01次-解析几何结论课 · 讲义',
+      title: '第01次-解析几何结论课（椭圆切线）· 讲义',
       documentType: 'lecture',
       visibility: 'student_visible',
       relativePath: '数学/第01次-解析几何结论课/讲义.md',

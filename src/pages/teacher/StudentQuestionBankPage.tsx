@@ -1,34 +1,169 @@
-import { Archive, ArrowRight, BookOpenCheck, Search } from 'lucide-react'
-import { useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Archive, BadgeCheck, BookOpenCheck, Check, CheckCircle2, LoaderCircle, ScanSearch, Search, Send, XCircle } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
+import { AttachmentGallery } from '../../components/AttachmentGallery'
 import { EmptyState } from '../../components/EmptyState'
+import { Modal } from '../../components/Modal'
 import { PageHeader } from '../../components/PageHeader'
 import { StatusPill } from '../../components/StatusPill'
 import { ErrorTagPill, LabelTag } from '../../components/Tag'
 import { usePlatform } from '../../context/PlatformContext'
-import { formatShortDate, subjectLabels } from '../../lib/utils'
-import type { Subject } from '../../types/domain'
+import { ERROR_TAG_OPTIONS } from '../../lib/review'
+import { cn, formatShortDate, subjectLabels } from '../../lib/utils'
+import type { ErrorTag, QuestionComment, Subject } from '../../types/domain'
 
 export function StudentQuestionBankPage() {
-  const { state } = usePlatform()
+  const { state, approveSubmission, gradeSubmission, rejectSubmission } = usePlatform()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [studentId, setStudentId] = useState(state.students[0]?.id ?? '')
   const [subject, setSubject] = useState<'all' | Subject>('all')
   const [query, setQuery] = useState('')
+  const [selectedUploadId, setSelectedUploadId] = useState('')
+  const [teacherHint, setTeacherHint] = useState('')
+  const [teacherEvaluation, setTeacherEvaluation] = useState('')
+  const [tags, setTags] = useState<ErrorTag[]>([])
+  const [busy, setBusy] = useState(false)
+  const [operationError, setOperationError] = useState('')
+  const [rejecting, setRejecting] = useState(false)
+  const [rejectReason, setRejectReason] = useState('图片不清晰或内容不完整，请重新上传完整题面和作答过程。')
   const student = state.students.find((item) => item.id === studentId)
   const normalizedQuery = query.trim().toLocaleLowerCase('zh-CN')
-  const items = useMemo(() => state.wrongItems.filter((item) => {
-    if (item.studentId !== studentId || (subject !== 'all' && item.subject !== subject)) return false
+  const confirmedItems = useMemo(() => state.wrongItems.filter((item) => {
+    if (item.studentId !== studentId || item.evidenceState !== 'teacher_verified' || (subject !== 'all' && item.subject !== subject)) return false
     if (!normalizedQuery) return true
     return `${item.title} ${item.questionText ?? ''} ${item.knowledgePoints.join(' ')} ${item.teacherNote}`
       .toLocaleLowerCase('zh-CN').includes(normalizedQuery)
   }), [normalizedQuery, state.wrongItems, studentId, subject])
-  const uploads = state.submissions
-    .filter((item) => item.studentId === studentId && item.mode === 'wrong_item' && !item.archivedToWrongBook && item.status !== 'scheduled')
-    .sort((left, right) => new Date(right.submittedAt).getTime() - new Date(left.submittedAt).getTime())
+  const filteredWrongUploads = useMemo(() => state.submissions
+    .filter((item) => {
+      if (item.studentId !== studentId || item.mode !== 'wrong_item') return false
+      if (subject !== 'all' && item.subject !== subject) return false
+      if (!normalizedQuery) return true
+      return `${item.title} ${item.selfReflection ?? ''} ${item.teacherHint ?? ''} ${item.teacherEvaluation ?? ''}`
+        .toLocaleLowerCase('zh-CN').includes(normalizedQuery)
+    })
+    .sort((left, right) => new Date(right.submittedAt).getTime() - new Date(left.submittedAt).getTime()),
+  [normalizedQuery, state.submissions, studentId, subject])
+  const uploads = filteredWrongUploads.filter((item) =>
+    !item.archivedToWrongBook && item.status !== 'scheduled' && item.status !== 'rejected',
+  )
+  const returnedUploads = filteredWrongUploads.filter((item) => item.status === 'rejected')
+  const selectedUpload = state.submissions.find((item) => item.id === selectedUploadId && item.mode === 'wrong_item')
+  const selectedDraft = state.analysisDrafts.find((item) => item.submissionId === selectedUploadId)
+  const selectedWrongItems = useMemo(
+    () => state.wrongItems.filter((item) => item.submissionId === selectedUploadId),
+    [selectedUploadId, state.wrongItems],
+  )
+  const selectedIsConfirmed = Boolean(
+    selectedUpload?.status === 'scheduled' || selectedUpload?.archivedToWrongBook || selectedWrongItems.some((item) => item.evidenceState === 'teacher_verified'),
+  )
+
+  useEffect(() => {
+    const requestedId = searchParams.get('submission')
+    if (!requestedId) return
+    const requested = state.submissions.find((item) => item.id === requestedId && item.mode === 'wrong_item')
+    if (!requested) return
+    setStudentId(requested.studentId)
+    setSelectedUploadId(requested.id)
+  }, [searchParams, state.submissions])
+
+  useEffect(() => {
+    setTeacherHint((selectedUpload?.teacherHint ?? '').replace(/^第[^：:\n]+题[：:]\s*/, ''))
+    setTeacherEvaluation(selectedUpload?.teacherEvaluation ?? '')
+    const confirmedTags = selectedWrongItems
+      .filter((item) => item.evidenceState === 'teacher_verified')
+      .flatMap((item) => item.errorTags)
+    setTags(confirmedTags.length ? [...new Set(confirmedTags)] : selectedDraft?.proposedTags ?? selectedUpload?.studentErrorTags ?? [])
+    setOperationError('')
+    setRejecting(false)
+    setRejectReason('图片不清晰或内容不完整，请重新上传完整题面和作答过程。')
+  }, [selectedDraft, selectedUpload, selectedWrongItems])
+
+  const openUpload = (submissionId: string) => {
+    setSelectedUploadId(submissionId)
+    setSearchParams({ submission: submissionId })
+  }
+
+  const closeUpload = () => {
+    if (busy) return
+    setSelectedUploadId('')
+    setSearchParams({})
+    setRejecting(false)
+  }
+
+  const feedbackInput = (): { feedback: string; comments: QuestionComment[] } => ({
+    feedback: teacherEvaluation.trim(),
+    comments: teacherHint.trim() && selectedUpload ? [{
+      questionNumber: selectedUpload.wrongNumbers[0] ?? '未标注',
+      comment: teacherHint.trim(),
+    }] : [],
+  })
+
+  const feedbackError = () => {
+    if (Array.from(teacherHint.trim()).length > 4000) return '给学生的提示最多 4000 个字符'
+    if (Array.from(teacherEvaluation.trim()).length > 8000) return '教师评价最多 8000 个字符'
+    return ''
+  }
+
+  const saveHint = async () => {
+    if (!selectedUpload || busy || (!teacherHint.trim() && !teacherEvaluation.trim())) return
+    const validationError = feedbackError()
+    if (validationError) return setOperationError(validationError)
+    const { feedback, comments } = feedbackInput()
+    setBusy(true)
+    setOperationError('')
+    try {
+      await gradeSubmission(selectedUpload.id, feedback, comments)
+    } catch (reason) {
+      setOperationError(reason instanceof Error ? reason.message : '提示保存失败，请稍后重试')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const confirmUpload = async () => {
+    if (!selectedUpload || busy || selectedIsConfirmed) return
+    const validationError = feedbackError()
+    if (validationError) return setOperationError(validationError)
+    setBusy(true)
+    setOperationError('')
+    try {
+      await approveSubmission(
+        selectedUpload.id,
+        tags,
+        teacherEvaluation.trim(),
+        [],
+        teacherHint.trim(),
+      )
+      setSelectedUploadId('')
+      setSearchParams({})
+    } catch (reason) {
+      setOperationError(reason instanceof Error ? reason.message : '错题确认失败，请稍后重试')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const rejectUpload = async () => {
+    if (!selectedUpload || busy || selectedIsConfirmed || !rejectReason.trim()) return
+    if (Array.from(rejectReason.trim()).length > 2000) return setOperationError('退回原因最多 2000 个字符')
+    setBusy(true)
+    setOperationError('')
+    try {
+      await rejectSubmission(selectedUpload.id, rejectReason.trim())
+      setSelectedUploadId('')
+      setSearchParams({})
+      setRejecting(false)
+    } catch (reason) {
+      setOperationError(reason instanceof Error ? reason.message : '退回失败，请稍后重试')
+    } finally {
+      setBusy(false)
+    }
+  }
 
   return (
     <>
-      <PageHeader title="学生错题库" description="每位学生独立保存已确认错题；确认归档后，后续备课可以按科目、知识点和错因筛选。" actions={<Link className="button" to="/teacher/review?mode=wrong_item"><ArrowRight size={16} />处理学生上传</Link>} />
+      <PageHeader title="学生错题库" description="学生上传后先作为自报记录保存在本人错题本；教师确认后才进入长期学情、复习计划和备课依据。" />
 
       <section className="question-bank-toolbar panel">
         <label className="field"><span>学生</span><select value={studentId} onChange={(event) => setStudentId(event.target.value)}>{state.students.map((item) => <option value={item.id} key={item.id}>{item.displayName}</option>)}</select></label>
@@ -37,22 +172,59 @@ export function StudentQuestionBankPage() {
       </section>
 
       <div className="question-bank-summary">
-        <div><Archive size={18} /><span>已归档错题</span><strong>{items.length}</strong></div>
-        <div><BookOpenCheck size={18} /><span>待处理上传</span><strong>{uploads.length}</strong></div>
+        <div><Archive size={18} /><span>教师已确认</span><strong>{confirmedItems.length}</strong></div>
+        <div><BookOpenCheck size={18} /><span>学生自报待确认</span><strong>{uploads.length}</strong></div>
         <div><span>当前学生</span><strong>{student?.displayName ?? '--'}</strong></div>
       </div>
 
       {uploads.length > 0 && <section className="panel question-bank-pending">
-        <div className="panel-header"><div><h2>学生主动上传，尚未归档</h2><p>先查看原题并发送提示，确认后点击“一键归档到错题库”。</p></div></div>
-        <div className="question-bank-pending-list">{uploads.map((upload) => <article key={upload.id}><div><span>{subjectLabels[upload.subject]} · {formatShortDate(upload.assignmentDate)}</span><strong>{upload.title}</strong>{upload.selfReflection && <p>{upload.selfReflection}</p>}</div><div>{upload.teacherFeedback && <p className="question-bank-feedback">教师回复：{upload.teacherFeedback}</p>}<StatusPill status={upload.status} /><Link className="button small" to={`/teacher/review?mode=wrong_item&submission=${upload.id}`}>查看并处理<ArrowRight size={14} /></Link></div></article>)}</div>
+        <div className="panel-header"><div><h2>学生自报，等待教师确认</h2><p>这些记录已在学生本人错题本中可见，但尚未进入长期学情和复习计划。</p></div><span>{uploads.length} 条待处理</span></div>
+        <div className="question-bank-pending-list">{uploads.map((upload) => <article key={upload.id}><div><span>{subjectLabels[upload.subject]} · {formatShortDate(upload.assignmentDate)}</span><strong>{upload.title}</strong>{upload.selfReflection && <p>{upload.selfReflection}</p>}</div><div>{upload.teacherHint && <p className="question-bank-feedback">教师提示：{upload.teacherHint}</p>}{upload.teacherEvaluation && <p className="question-bank-feedback">教师评价：{upload.teacherEvaluation}</p>}<StatusPill status={upload.status} /><button className="button small" type="button" onClick={() => openUpload(upload.id)}>查看、提示与确认</button></div></article>)}</div>
+      </section>}
+
+      {returnedUploads.length > 0 && <section className="panel question-bank-returned">
+        <div className="panel-header"><div><h2>已退回记录</h2><p>原始自报记录继续留存，学生重新上传后会形成新的待确认记录。</p></div><span>{returnedUploads.length} 条</span></div>
+        <div className="question-bank-pending-list">{returnedUploads.map((upload) => <article key={upload.id}><div><span>{subjectLabels[upload.subject]} · {formatShortDate(upload.assignmentDate)}</span><strong>{upload.title}</strong><p>{upload.failureReason || '已退回，请学生重新上传。'}</p></div><div><StatusPill status={upload.status} /></div></article>)}</div>
       </section>}
 
       <section className="panel question-bank-list-panel">
-        <div className="panel-header"><div><h2>{student?.displayName ?? '学生'}的已确认错题</h2><p>这些记录已经进入该学生专属题库，可作为后续复习和备课选题依据。</p></div><Archive size={18} /></div>
-        {items.length ? <div className="student-question-list">{items.map((item) => <article key={item.id}>
-          <div className="student-question-main"><div className="student-question-meta"><LabelTag>{subjectLabels[item.subject]}</LabelTag><span>{formatShortDate(item.occurredAt)} · 题号 {item.questionNumber}</span></div><h3>{item.title}</h3>{item.questionText && <p className="question-text-preview">{item.questionText}</p>}<div className="tag-row">{item.knowledgePoints.map((point) => <LabelTag key={point}>{point}</LabelTag>)}{item.errorTags.map((tag) => <ErrorTagPill tag={tag} key={tag} />)}</div></div><div className="student-question-note"><span>教师确认备注</span><p>{item.teacherNote || '暂无备注'}</p><strong>{item.resolved ? '已稳定掌握' : `复习阶段 ${item.reviewStage + 1}/4`}</strong></div>
-        </article>)}</div> : <EmptyState icon={Archive} title="该筛选条件下还没有已归档错题" detail="学生上传后，请先在“处理学生上传”中确认，再归档到专属错题库。" />}
+        <div className="panel-header"><div><h2>{student?.displayName ?? '学生'}的教师确认错题</h2><p>只有这里的记录会进入长期学情、复习计划，并作为后续备课依据。</p></div><Archive size={18} /></div>
+        {confirmedItems.length ? <div className="student-question-list">{confirmedItems.map((item) => <article key={item.id}>
+          <div className="student-question-main"><div className="student-question-meta"><LabelTag>{subjectLabels[item.subject]}</LabelTag><span>{formatShortDate(item.occurredAt)} · 题号 {item.questionNumber}</span></div><h3>{item.title}</h3>{item.questionText && <p className="question-text-preview">{item.questionText}</p>}<div className="tag-row">{item.knowledgePoints.map((point) => <LabelTag key={point}>{point}</LabelTag>)}{item.errorTags.map((tag) => <ErrorTagPill tag={tag} key={tag} />)}</div>{item.submissionId && state.submissions.some((submission) => submission.id === item.submissionId) && <button className="button small" type="button" onClick={() => openUpload(item.submissionId)}><ScanSearch size={14} />查看原始上传</button>}</div><div className="student-question-note"><span>教师确认备注</span><p>{item.teacherNote || '暂无备注'}</p><strong>{item.resolved ? '已稳定掌握' : `复习阶段 ${item.reviewStage + 1}/4`}</strong></div>
+        </article>)}</div> : <EmptyState icon={Archive} title="该筛选条件下还没有教师确认错题" detail="学生自报记录需要教师核对后，才会进入长期错题与复习计划。" />}
       </section>
+
+      <Modal
+        open={Boolean(selectedUpload)}
+        title={selectedUpload?.title ?? '处理学生自报错题'}
+        onClose={closeUpload}
+        dismissible={!busy}
+        footer={rejecting ? <>
+          <button type="button" className="button" onClick={() => setRejecting(false)} disabled={busy}>取消</button>
+          <button type="button" className="button danger" onClick={() => void rejectUpload()} disabled={busy || !rejectReason.trim()}>{busy ? <LoaderCircle className="spin" size={16} /> : <XCircle size={16} />}确认退回</button>
+        </> : <>
+          {!selectedIsConfirmed && <button type="button" className="button danger" onClick={() => setRejecting(true)} disabled={busy}><XCircle size={16} />退回补充</button>}
+          <button type="button" className="button" onClick={() => void saveHint()} disabled={busy || (!teacherHint.trim() && !teacherEvaluation.trim())}>{busy ? <LoaderCircle className="spin" size={16} /> : <Send size={16} />}仅保存提示</button>
+          {selectedIsConfirmed
+            ? <button type="button" className="button primary" onClick={closeUpload} disabled={busy}><CheckCircle2 size={16} />已纳入长期错题</button>
+            : <button type="button" className="button primary" onClick={() => void confirmUpload()} disabled={busy}>{busy ? <LoaderCircle className="spin" size={16} /> : <CheckCircle2 size={16} />}确认并纳入长期错题</button>}
+        </>}
+      >
+        {selectedUpload && <div className="teacher-review-form">
+          <div><StatusPill status={selectedUpload.status} /></div>
+          <AttachmentGallery attachments={selectedUpload.attachments} title={selectedUpload.title} />
+          <div className="student-reflection"><span>学生说明</span><p>{selectedUpload.selfReflection || '学生未填写补充说明'}</p></div>
+          {selectedDraft && <div className="analysis-draft"><div className="draft-confidence"><span>AI 初步分析</span><strong>{Math.round(selectedDraft.confidence * 100)}%</strong></div><p>{selectedDraft.summary}</p></div>}
+          <label className="field"><span>给学生的提示（可单独保存）</span><textarea value={teacherHint} maxLength={4000} onChange={(event) => { setTeacherHint(event.target.value); setOperationError('') }} placeholder="给出下一步切入点，不必直接给完整答案。" disabled={busy} /></label>
+          <label className="field"><span>教师评价（可选）</span><textarea value={teacherEvaluation} maxLength={8000} onChange={(event) => { setTeacherEvaluation(event.target.value); setOperationError('') }} placeholder="确认前可记录题目价值、主要问题和后续要求。" disabled={busy} /></label>
+          {rejecting && <label className="field question-bank-reject"><span>退回原因</span><textarea value={rejectReason} maxLength={2000} onChange={(event) => { setRejectReason(event.target.value); setOperationError('') }} placeholder="说明需要重新上传的内容。" disabled={busy} autoFocus /></label>}
+          <label><BadgeCheck size={16} />教师确认错因（可选）</label>
+          <div className="check-grid review-tags">
+            {ERROR_TAG_OPTIONS.map((option) => <button type="button" className={cn('check-option', tags.includes(option.value) && 'active')} onClick={() => setTags((previous) => previous.includes(option.value) ? previous.filter((item) => item !== option.value) : [...previous, option.value])} disabled={busy || selectedIsConfirmed || rejecting} key={option.value}><span>{tags.includes(option.value) && <Check size={13} />}</span>{option.label}</button>)}
+          </div>
+          {operationError && <p className="form-error" role="alert">{operationError}</p>}
+        </div>}
+      </Modal>
     </>
   )
 }

@@ -26,11 +26,12 @@ function teacherState(username = 'teacher-demo') {
 }
 
 function ContextProbe() {
-  const { authenticated, refresh, state } = usePlatform()
+  const { authenticated, refresh, state, syncError } = usePlatform()
   return (
     <>
       <span data-testid="authenticated">{String(authenticated)}</span>
       <span data-testid="username">{state.currentUser.username}</span>
+      <span data-testid="sync-error">{syncError}</span>
       <button type="button" onClick={() => void refresh()}>刷新</button>
     </>
   )
@@ -62,6 +63,7 @@ vi.mock('../lib/supabase', () => ({
 
 describe('production authentication flow', () => {
   beforeEach(() => {
+    vi.restoreAllMocks()
     localStorage.clear()
     invokeFunctionMock.mockReset()
     authMock.getSession.mockReset()
@@ -74,7 +76,7 @@ describe('production authentication flow', () => {
     authMock.signOut.mockResolvedValue({ error: null })
   })
 
-  it('keeps the login form mounted while one shared bootstrap finishes', async () => {
+  it('enters the selected workspace while one shared bootstrap finishes in the background', async () => {
     let bootstrapCalls = 0
     let resolveAuthenticatedBootstrap: ((state: PlatformState) => void) | undefined
     const authenticatedBootstrap = new Promise<PlatformState>((resolve) => {
@@ -88,7 +90,6 @@ describe('production authentication flow', () => {
       }
       if (name === 'bootstrap') {
         bootstrapCalls += 1
-        if (bootstrapCalls === 1) return Promise.reject(new Error('Unauthorized'))
         return authenticatedBootstrap
       }
       return Promise.reject(new Error(`Unexpected function: ${name}`))
@@ -110,18 +111,18 @@ describe('production authentication flow', () => {
     fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'private-password' } })
     fireEvent.click(screen.getByRole('button', { name: '登录' }))
 
-    await waitFor(() => expect(bootstrapCalls).toBe(2))
-    expect(screen.getByRole('heading', { name: '登录学习工作台' })).toBeInTheDocument()
+    await waitFor(() => expect(bootstrapCalls).toBe(1))
+    expect(await screen.findByRole('heading', { name: '教学概览' }, { timeout: 10_000 })).toBeInTheDocument()
     expect(screen.queryByText('正在载入工作台')).not.toBeInTheDocument()
-    expect(screen.getByLabelText('账号')).toHaveDisplayValue('方老师')
 
     await act(async () => resolveAuthenticatedBootstrap?.(teacherState()))
 
     expect(await screen.findByRole('heading', { name: '教学概览' })).toBeInTheDocument()
-    expect(invokeFunctionMock.mock.calls.filter(([name]) => name === 'bootstrap')).toHaveLength(2)
+    expect(invokeFunctionMock.mock.calls.filter(([name]) => name === 'bootstrap')).toHaveLength(1)
   })
 
   it('starts a fresh read for each ordinary refresh and ignores an older response', async () => {
+    authMock.getSession.mockResolvedValue({ data: { session: { user: { id: 'teacher' } } } })
     let bootstrapCalls = 0
     let resolveOlder: ((state: PlatformState) => void) | undefined
     let resolveNewer: ((state: PlatformState) => void) | undefined
@@ -150,6 +151,7 @@ describe('production authentication flow', () => {
   })
 
   it('does not let a stale bootstrap restore an account after sign-out', async () => {
+    authMock.getSession.mockResolvedValue({ data: { session: { user: { id: 'teacher' } } } })
     let bootstrapCalls = 0
     let resolveStale: ((state: PlatformState) => void) | undefined
     const stale = new Promise<PlatformState>((resolve) => { resolveStale = resolve })
@@ -173,16 +175,39 @@ describe('production authentication flow', () => {
     expect(screen.getByTestId('username')).toBeEmptyDOMElement()
   })
 
-  it('shows a bootstrap failure on the login form', async () => {
+  it('keeps an authenticated workspace on a transient refresh failure and clears the warning after retry', async () => {
+    authMock.getSession.mockResolvedValue({ data: { session: { user: { id: 'teacher' } } } })
     let bootstrapCalls = 0
+    invokeFunctionMock.mockImplementation((name: string) => {
+      if (name !== 'bootstrap') return Promise.reject(new Error(`Unexpected function: ${name}`))
+      bootstrapCalls += 1
+      if (bootstrapCalls === 1) return Promise.resolve(teacherState('initial'))
+      if (bootstrapCalls === 2) return Promise.reject(new Error('temporary network error'))
+      return Promise.resolve(teacherState('recovered'))
+    })
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    render(<PlatformProvider><ContextProbe /></PlatformProvider>)
+    await waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('initial'))
+
+    await userEvent.click(screen.getByRole('button', { name: '刷新' }))
+    await waitFor(() => expect(screen.getByTestId('sync-error')).toHaveTextContent('平台数据同步失败'))
+    expect(screen.getByTestId('authenticated')).toHaveTextContent('true')
+    expect(screen.getByTestId('username')).toHaveTextContent('initial')
+
+    await userEvent.click(screen.getByRole('button', { name: '刷新' }))
+    await waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('recovered'))
+    expect(screen.getByTestId('sync-error')).toBeEmptyDOMElement()
+  })
+
+  it('shows a bootstrap failure on the login form', async () => {
     invokeFunctionMock.mockImplementation((name: string, body?: { action?: string }) => {
       if (name === 'username-login') {
         if (body?.action === 'list_accounts') return Promise.resolve({ accounts: loginAccounts })
         return Promise.resolve({ accessToken: 'access-token', refreshToken: 'refresh-token' })
       }
       if (name === 'bootstrap') {
-        bootstrapCalls += 1
-        return Promise.reject(new Error(bootstrapCalls === 1 ? 'Unauthorized' : '平台数据加载失败'))
+        return Promise.reject(new Error('平台数据加载失败'))
       }
       return Promise.reject(new Error(`Unexpected function: ${name}`))
     })

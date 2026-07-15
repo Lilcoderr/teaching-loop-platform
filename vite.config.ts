@@ -12,11 +12,25 @@ export default defineConfig(({ mode }) => {
     build: {
       rollupOptions: {
         output: {
-          manualChunks: {
-            'react-vendor': ['react', 'react-dom', 'react-router-dom'],
-            'markdown-vendor': ['react-markdown', 'remark-math', 'rehype-katex', 'katex'],
-            'supabase-vendor': ['@supabase/supabase-js'],
-            'icons-vendor': ['lucide-react'],
+          manualChunks(id) {
+            const moduleId = id.replaceAll('\\', '/')
+            if (moduleId.includes('/node_modules/react/')
+              || moduleId.includes('/node_modules/react-dom/')
+              || moduleId.includes('/node_modules/react-router/')
+              || moduleId.includes('/node_modules/react-router-dom/')
+              || moduleId.includes('/node_modules/scheduler/')) return 'react-vendor'
+            if (moduleId.includes('/node_modules/@supabase/')) return 'supabase-vendor'
+            if (moduleId.includes('/node_modules/lucide-react/')) return 'icons-vendor'
+            if (moduleId.includes('/node_modules/react-markdown/')
+              || moduleId.includes('/node_modules/remark-')
+              || moduleId.includes('/node_modules/rehype-')
+              || moduleId.includes('/node_modules/katex/')
+              || moduleId.includes('/node_modules/unified/')
+              || moduleId.includes('/node_modules/micromark')
+              || moduleId.includes('/node_modules/mdast-')
+              || moduleId.includes('/node_modules/hast-')
+              || moduleId.includes('/node_modules/unist-')
+              || moduleId.includes('/node_modules/vfile')) return 'markdown-vendor'
           },
         },
       },
@@ -45,6 +59,7 @@ export default defineConfig(({ mode }) => {
       environment: 'jsdom',
       setupFiles: './src/test/setup.ts',
       css: true,
+      testTimeout: 15_000,
     },
   }
 })

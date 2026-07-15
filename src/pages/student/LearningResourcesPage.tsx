@@ -1,12 +1,13 @@
 import { BookOpen, ClipboardList, FileQuestion, FileText, Lightbulb, Library, Search } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { lazy, Suspense, useMemo, useState } from 'react'
 import { EmptyState } from '../../components/EmptyState'
-import { MarkdownContent } from '../../components/MarkdownContent'
 import { Modal } from '../../components/Modal'
 import { PageHeader } from '../../components/PageHeader'
 import { usePlatform } from '../../context/PlatformContext'
 import { formatShortDate, subjectLabels } from '../../lib/utils'
 import type { LearningResource, LearningResourceType, Subject } from '../../types/domain'
+
+const MarkdownContent = lazy(() => import('../../components/MarkdownContent').then((module) => ({ default: module.MarkdownContent })))
 
 const typeMeta: Record<LearningResourceType, { label: string; icon: typeof BookOpen }> = {
   lecture: { label: '讲义', icon: BookOpen },
@@ -82,7 +83,7 @@ export function LearningResourcesPage() {
         </div>
       )}
       <Modal open={Boolean(selectedMethod)} title={selectedMethod?.title ?? '方法技巧'} onClose={() => setSelectedMethod(null)}>
-        {selectedMethod && <div className="method-reader"><div className="method-reader-meta"><span>{subjectLabels[selectedMethod.subject]}</span><span>{selectedMethod.topic}</span>{selectedMethod.description && <p>{selectedMethod.description}</p>}</div><MarkdownContent>{selectedMethod.body || '老师尚未填写方法正文。'}</MarkdownContent></div>}
+        {selectedMethod && <div className="method-reader"><div className="method-reader-meta"><span>{subjectLabels[selectedMethod.subject]}</span><span>{selectedMethod.topic}</span>{selectedMethod.description && <p>{selectedMethod.description}</p>}</div><Suspense fallback={<p>正在载入方法正文</p>}><MarkdownContent>{selectedMethod.body || '老师尚未填写方法正文。'}</MarkdownContent></Suspense></div>}
       </Modal>
     </>
   )

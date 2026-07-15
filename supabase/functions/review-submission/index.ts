@@ -4,19 +4,65 @@ import { asErrorResponse, HttpError, json, readJson, requireString } from '../_s
 
 const VALID_TAGS = new Set(['concept', 'reading', 'modeling', 'calculation', 'writing', 'speed', 'avoidance'])
 
+function textField(value: unknown, label: string, max: number): string {
+  if (value === undefined || value === null || value === '') return ''
+  if (typeof value !== 'string') throw new HttpError(400, `${label}格式无效`, 'invalid_input')
+  const result = value.trim()
+  if (Array.from(result).length > max) throw new HttpError(400, `${label}最多 ${max} 个字符`, 'invalid_input')
+  return result
+}
+
 function questionComments(value: unknown): Array<Record<string, unknown>> {
-  if (!Array.isArray(value)) return []
-  return value.slice(0, 100).flatMap((item) => {
-    if (!item || typeof item !== 'object') return []
+  if (value === undefined || value === null) return []
+  if (!Array.isArray(value)) throw new HttpError(400, '逐题反馈格式无效', 'invalid_question_comment')
+  if (value.length > 100) throw new HttpError(400, '逐题反馈一次最多 100 条', 'invalid_question_comment')
+  return value.map((item, index) => {
+    if (!item || typeof item !== 'object') throw new HttpError(400, `第 ${index + 1} 条逐题反馈格式无效`, 'invalid_question_comment')
     const row = item as Record<string, unknown>
-    const questionNumber = typeof row.questionNumber === 'string' ? row.questionNumber.trim().slice(0, 40) : ''
-    const comment = typeof row.comment === 'string' ? row.comment.trim().slice(0, 2000) : ''
-    if (!questionNumber || !comment) return []
+    const questionNumber = textField(row.questionNumber, `第 ${index + 1} 条逐题反馈题号`, 40)
+    const comment = textField(row.comment, `第 ${index + 1} 条逐题反馈`, 2000)
+    if (!questionNumber || !comment) throw new HttpError(400, `第 ${index + 1} 条逐题反馈不完整`, 'invalid_question_comment')
     const result: Record<string, unknown> = { questionNumber, comment }
-    if (typeof row.score === 'number' && Number.isFinite(row.score)) result.score = Math.max(0, Math.min(10000, row.score))
-    if (typeof row.maxScore === 'number' && Number.isFinite(row.maxScore)) result.maxScore = Math.max(0, Math.min(10000, row.maxScore))
-    return [result]
+    if (row.score !== undefined) {
+      if (typeof row.score !== 'number' || !Number.isFinite(row.score) || row.score < 0 || row.score > 10000) {
+        throw new HttpError(400, `第 ${index + 1} 条逐题反馈得分无效`, 'invalid_question_comment')
+      }
+      result.score = row.score
+    }
+    if (row.maxScore !== undefined) {
+      if (typeof row.maxScore !== 'number' || !Number.isFinite(row.maxScore) || row.maxScore < 0 || row.maxScore > 10000) {
+        throw new HttpError(400, `第 ${index + 1} 条逐题反馈满分无效`, 'invalid_question_comment')
+      }
+      result.maxScore = row.maxScore
+    }
+    return result
   })
+}
+
+function wrongNumbers(value: unknown): string[] {
+  if (value === undefined || value === null) return []
+  if (!Array.isArray(value)) throw new HttpError(400, '确认错题题号格式无效', 'invalid_question_number')
+  if (value.length > 50) throw new HttpError(400, '一次最多确认 50 个错题题号', 'invalid_question_number')
+  const values = value.map((item) => {
+    if (typeof item !== 'string' || !item.trim()) throw new HttpError(400, '确认错题题号不能为空', 'invalid_question_number')
+    const result = item.trim()
+    if (Array.from(result).length > 40) throw new HttpError(400, '单个题号最多 40 个字符', 'invalid_question_number')
+    return result
+  })
+  return [...new Set(values)]
+}
+
+function gradeFields(body: Record<string, unknown>) {
+  const score = body.score === null || body.score === undefined ? null : body.score
+  const maxScore = body.maxScore === null || body.maxScore === undefined ? null : body.maxScore
+  if (score !== null && (typeof score !== 'number' || !Number.isFinite(score) || score < 0 || score > 10000)) {
+    throw new HttpError(400, '得分格式无效', 'invalid_input')
+  }
+  if (maxScore !== null && (typeof maxScore !== 'number' || !Number.isFinite(maxScore) || maxScore <= 0 || maxScore > 10000)) {
+    throw new HttpError(400, '满分格式无效', 'invalid_input')
+  }
+  if (score !== null && maxScore !== null && score > maxScore) throw new HttpError(400, '得分不能超过满分', 'invalid_input')
+  return { score, maxScore, comments: questionComments(body.questionComments) }
 }
 
 Deno.serve(async (request) => {
@@ -36,8 +82,8 @@ Deno.serve(async (request) => {
       if (submission.mode !== 'wrong_item') {
         throw new HttpError(400, 'Feedback action requires a wrong-item submission', 'invalid_submission_mode')
       }
-      const teacherHint = typeof body.teacherHint === 'string' ? body.teacherHint.trim().slice(0, 4000) : ''
-      const teacherEvaluation = typeof body.teacherEvaluation === 'string' ? body.teacherEvaluation.trim().slice(0, 8000) : ''
+      const teacherHint = textField(body.teacherHint, '教师提示', 4000)
+      const teacherEvaluation = textField(body.teacherEvaluation, '教师评价', 8000)
       if (!teacherHint && !teacherEvaluation) {
         throw new HttpError(400, 'A hint or evaluation is required', 'feedback_required')
       }
@@ -64,8 +110,8 @@ Deno.serve(async (request) => {
     if (action === 'archive_wrong_item') {
       const tags = Array.isArray(body.tags)
         ? body.tags.filter((tag): tag is string => typeof tag === 'string' && VALID_TAGS.has(tag)) : []
-      const teacherHint = typeof body.teacherHint === 'string' ? body.teacherHint.trim().slice(0, 4000) : ''
-      const teacherEvaluation = typeof body.teacherEvaluation === 'string' ? body.teacherEvaluation.trim().slice(0, 8000) : ''
+      const teacherHint = textField(body.teacherHint, '教师提示', 4000)
+      const teacherEvaluation = textField(body.teacherEvaluation, '教师评价', 8000)
       const { data, error } = await db.rpc('archive_wrong_item_submission', {
         target_submission_id: submissionId,
         reviewer_id: actor.id,
@@ -76,19 +122,36 @@ Deno.serve(async (request) => {
       if (error) throw error
       return json(request, { ok: true, ...data })
     }
+    if (action === 'grade_and_approve') {
+      const tags = Array.isArray(body.tags)
+        ? body.tags.filter((tag): tag is string => typeof tag === 'string' && VALID_TAGS.has(tag)) : []
+      const feedback = textField(body.feedback, '总体反馈', 4000)
+      if (!feedback) throw new HttpError(400, '总体反馈不能为空', 'invalid_input')
+      const { score, maxScore, comments } = gradeFields(body)
+      const confirmedWrongNumbers = wrongNumbers(body.confirmedWrongNumbers)
+      const { data, error } = await db.rpc('grade_and_approve_submission', {
+        target_submission_id: submissionId,
+        reviewer_id: actor.id,
+        grade_score: score,
+        grade_max_score: maxScore,
+        grade_feedback: feedback,
+        grade_question_feedback: comments,
+        approved_tags: tags,
+        confirmed_wrong_numbers: confirmedWrongNumbers,
+      })
+      if (error) throw error
+      return json(request, { ok: true, ...data })
+    }
     if (action === 'grade') {
       const { data: submission, error: submissionError } = await db.from('submissions')
-        .select('id,student_id,status').eq('id', submissionId).maybeSingle()
+        .select('id,student_id,status,mode').eq('id', submissionId).maybeSingle()
       if (submissionError) throw submissionError
       if (!submission) throw new HttpError(404, '提交不存在', 'not_found')
-      const score = body.score === null || body.score === undefined ? null
-        : typeof body.score === 'number' && Number.isFinite(body.score) ? Math.max(0, Math.min(10000, body.score)) : undefined
-      const maxScore = body.maxScore === null || body.maxScore === undefined ? null
-        : typeof body.maxScore === 'number' && Number.isFinite(body.maxScore) ? Math.max(0.01, Math.min(10000, body.maxScore)) : undefined
-      if (score === undefined || maxScore === undefined) throw new HttpError(400, '分数格式无效', 'invalid_input')
-      if (score !== null && maxScore !== null && score > maxScore) throw new HttpError(400, '得分不能超过满分', 'invalid_input')
-      const feedback = typeof body.feedback === 'string' ? body.feedback.trim().slice(0, 8000) : ''
-      const comments = questionComments(body.questionComments)
+      if (submission.mode !== 'assignment') {
+        throw new HttpError(400, '作业评分只适用于整份作业提交', 'invalid_submission_mode')
+      }
+      const { score, maxScore, comments } = gradeFields(body)
+      const feedback = textField(body.feedback, '总体反馈', 4000)
       const { data: grade, error: gradeError } = await db.from('submission_grades').upsert({
         submission_id: submission.id,
         student_id: submission.student_id,
@@ -113,11 +176,8 @@ Deno.serve(async (request) => {
       }
       const tags = Array.isArray(body.tags)
         ? body.tags.filter((tag): tag is string => typeof tag === 'string' && VALID_TAGS.has(tag)) : []
-      const confirmedWrongNumbers = Array.isArray(body.confirmedWrongNumbers)
-        ? [...new Set(body.confirmedWrongNumbers.filter((value): value is string => typeof value === 'string')
-          .map((value) => value.trim().slice(0, 40)).filter(Boolean))].slice(0, 50)
-        : []
-      const teacherNote = typeof body.teacherNote === 'string' ? body.teacherNote.trim().slice(0, 4000) : ''
+      const confirmedWrongNumbers = wrongNumbers(body.confirmedWrongNumbers)
+      const teacherNote = textField(body.teacherNote, '总体反馈', 4000)
       const { data, error } = await db.rpc('approve_submission', {
         target_submission_id: submissionId,
         reviewer_id: actor.id,
@@ -130,11 +190,18 @@ Deno.serve(async (request) => {
     }
     if (action === 'reject') {
       const reason = requireString(body.reason, '驳回原因', 2000)
-      const { data: submission } = await db.from('submissions').select('id,status').eq('id', submissionId).maybeSingle()
-      if (!submission) throw new HttpError(404, '提交不存在', 'not_found')
-      if (submission.status === 'scheduled') throw new HttpError(409, '已生成复习计划的提交不能直接驳回', 'invalid_status')
-      const { error } = await db.from('submissions').update({ status: 'rejected', failure_reason: reason }).eq('id', submissionId)
-      if (error) throw error
+      const { data: rejected, error: rejectError } = await db.from('submissions')
+        .update({ status: 'rejected', failure_reason: reason })
+        .eq('id', submissionId)
+        .in('status', ['uploaded', 'analyzing', 'needs_review', 'failed'])
+        .select('id').maybeSingle()
+      if (rejectError) throw rejectError
+      if (!rejected) {
+        const { data: current, error: currentError } = await db.from('submissions').select('id,status').eq('id', submissionId).maybeSingle()
+        if (currentError) throw currentError
+        if (!current) throw new HttpError(404, '提交不存在', 'not_found')
+        throw new HttpError(409, '当前状态已变化，不能退回该提交', 'invalid_status')
+      }
       await db.from('audit_logs').insert({ actor_id: actor.id, action: 'submission.reject', target_type: 'submission', target_id: submissionId, metadata: { reason } })
       return json(request, { ok: true })
     }

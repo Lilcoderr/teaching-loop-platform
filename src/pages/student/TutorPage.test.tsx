@@ -62,4 +62,18 @@ describe('TutorPage multimodal composer', () => {
     await user.type(screen.getByPlaceholderText('先写下你已经尝试的公式、设元或步骤……'), '设直线为 y=kx+b')
     expect(screen.getByTitle('发送')).toBeEnabled()
   })
+
+  it('keeps the selected image when the server reports that vision is unavailable', async () => {
+    mocks.sendTutorMessage.mockRejectedValueOnce(new Error('图片答疑暂未启用，请先输入题目文字，或联系老师开启视觉模型。'))
+    const user = userEvent.setup()
+    const { container } = render(<TutorPage />)
+    const fileInput = container.querySelector<HTMLInputElement>('input[type="file"]')!
+    const file = new File([new Uint8Array([0xff, 0xd8, 0xff, 0xe0])], 'question.jpg', { type: 'image/jpeg' })
+    await user.upload(fileInput, file)
+    await user.click(screen.getByTitle('发送'))
+
+    expect(await screen.findByText('图片答疑暂未启用，请先输入题目文字，或联系老师开启视觉模型。')).toBeInTheDocument()
+    expect(screen.getByAltText('待发送的题目')).toBeInTheDocument()
+    expect(mocks.sendTutorMessage).toHaveBeenCalledTimes(1)
+  })
 })

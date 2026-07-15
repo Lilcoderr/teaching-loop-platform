@@ -11,6 +11,7 @@ export interface ModelResult {
 }
 
 type ModelKind = 'text' | 'vision' | 'embedding'
+export type ChatModelKind = 'text' | 'vision'
 
 function configuredValue(kind: ModelKind, suffix: 'BASE_URL' | 'API_KEY'): string | undefined {
   return Deno.env.get(`AI_${kind.toUpperCase()}_${suffix}`)?.trim() || Deno.env.get(`AI_${suffix}`)?.trim()
@@ -21,8 +22,23 @@ function endpoint(path: string, kind: ModelKind): string | null {
   return base ? `${base}${path}` : null
 }
 
+function selectedChatModel(kind: ChatModelKind, requestedModel?: string): string {
+  const configuredModel = kind === 'vision'
+    ? Deno.env.get('AI_VISION_MODEL')?.trim()
+    : Deno.env.get('AI_TEXT_MODEL')?.trim()
+  return configuredModel || requestedModel?.trim() || (kind === 'text' ? 'deepseek-chat' : '')
+}
+
+export function chatModelConfigured(kind: ChatModelKind, requestedModel?: string): boolean {
+  return Boolean(
+    endpoint('/chat/completions', kind)
+    && configuredValue(kind, 'API_KEY')
+    && selectedChatModel(kind, requestedModel),
+  )
+}
+
 export function modelConfigured(): boolean {
-  return Boolean(endpoint('/chat/completions', 'text') && configuredValue('text', 'API_KEY'))
+  return chatModelConfigured('text')
 }
 
 export async function chatCompletion(
@@ -33,10 +49,7 @@ export async function chatCompletion(
   const url = endpoint('/chat/completions', kind)
   const key = configuredValue(kind, 'API_KEY')
   if (!url || !key) return null
-  const configuredModel = kind === 'vision'
-    ? Deno.env.get('AI_VISION_MODEL')?.trim()
-    : Deno.env.get('AI_TEXT_MODEL')?.trim()
-  const model = configuredModel || options.model?.trim() || (kind === 'text' ? 'deepseek-chat' : '')
+  const model = selectedChatModel(kind, options.model)
   if (!model) return null
   try {
     const response = await fetch(url, {

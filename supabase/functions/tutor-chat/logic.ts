@@ -40,6 +40,78 @@ export interface WrongItemCandidate {
   teacher_note?: string | null
 }
 
+export type TutorSourceAnchorType = 'lecture' | 'exercise' | 'solution' | 'method' | 'wrong_item'
+
+export interface TutorSourceAnchorCandidate {
+  id: string
+  labels: unknown[]
+  sourceType: TutorSourceAnchorType
+}
+
+export interface TutorSourceAnchor {
+  id: string
+  label: string
+  sourceType: TutorSourceAnchorType
+}
+
+const SAFE_ANCHOR_ID = /^[kmw][1-9][0-9]?$/
+const ANSWER_SHAPED_LABEL = /(?:答案\s*(?:为|是|[:：])|最终(?:答案|结果|结论)?\s*(?:为|是|[:：])|解得|故选|应选|选择\s*[A-D](?:\b|项)|选项\s*[A-D](?:\b|项)|\\boxed|(?:^|[\s，。；：:])[^，。；：:\s]{1,12}\s*(?:=|≈)\s*(?:[-+]?\d+(?:\.\d+)?|[A-D](?:\b|$)|√|\\(?:sqrt|frac|pi)))/i
+
+export function sanitizeTutorSourceLabel(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const normalized = value.normalize('NFKC')
+    .replace(/[\u0000-\u001F\u007F\u061C\u200B-\u200F\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (normalized.length < 2 || ANSWER_SHAPED_LABEL.test(normalized)) return null
+  const plain = normalized
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/[`*_#\[\]{}<>|$]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 80)
+  return plain.length >= 2 && !ANSWER_SHAPED_LABEL.test(plain) ? plain : null
+}
+
+export function buildSafeSourceAnchors(
+  candidates: TutorSourceAnchorCandidate[],
+  limit = 8,
+): TutorSourceAnchor[] {
+  const anchors: TutorSourceAnchor[] = []
+  const ids = new Set<string>()
+  for (const candidate of candidates) {
+    if (anchors.length >= Math.min(Math.max(limit, 0), 12)) break
+    if (!SAFE_ANCHOR_ID.test(candidate.id) || ids.has(candidate.id)) continue
+    const label = candidate.labels.map(sanitizeTutorSourceLabel).find((item): item is string => Boolean(item))
+    if (!label) continue
+    ids.add(candidate.id)
+    anchors.push({ id: candidate.id, label, sourceType: candidate.sourceType })
+  }
+  return anchors
+}
+
+export function buildTutorRetrievalPromptBlock(
+  level: StoredHintLevel,
+  anchors: TutorSourceAnchor[],
+  fullContextLines: string[],
+): string {
+  if (level === 'solution') {
+    return [
+      '<authorized_retrieval_context>',
+      fullContextLines.join('\n\n') || '无可靠匹配资料',
+      '</authorized_retrieval_context>',
+    ].join('\n')
+  }
+  return [
+    '<authorized_retrieval_metadata>',
+    anchors.map((anchor) => `[${anchor.id}] ${anchor.sourceType}: ${anchor.label}`).join('\n') || '无可靠匹配资料元数据',
+    '</authorized_retrieval_metadata>',
+    '<untrusted_authorized_retrieval_context>',
+    fullContextLines.join('\n\n') || '无可靠匹配资料',
+    '</untrusted_authorized_retrieval_context>',
+  ].join('\n')
+}
+
 export function resolveAnswerMode(answerMode: unknown, legacyHintLevel: unknown): {
   answerMode: AnswerMode
   hintLevel: StoredHintLevel
@@ -163,17 +235,98 @@ export function selectRelevantWrongItems<T extends WrongItemCandidate>(items: T[
   ].filter(Boolean).join('\n'))).slice(0, limit)
 }
 
-export function fallbackAnswer(level: StoredHintLevel, hasSources: boolean): string {
-  const sourceLead = hasSources ? '已找到与你的问题相关的已学资料，我会优先沿用其中的方法。\n\n' : ''
-  if (level === 'diagnose') return `${sourceLead}先确认卡点：你是还没有确定第一步，还是已经列出关系式但无法继续？请把最先不确定的等式或步骤发来。`
-  if (level === 'hint') return `${sourceLead}先只做一步：分别写出已知量、目标量和限制条件，再判断它们能由哪个定义或公式连接。暂时不要展开后续计算。`
-  if (level === 'key_step') return `${sourceLead}关键步骤是把题目的文字或几何条件转成可检验的数学关系。完成列式后先检查定义域、单位和符号，再继续计算；这里先不展开最终结果。`
-  return `${sourceLead}请沿“整理条件 → 选择方法 → 建立关系 → 计算 → 检验”的顺序完成，并逐步保留等价变形。`
+function sourceLead(hasSources: boolean, anchor?: TutorSourceAnchor): string {
+  if (!hasSources) return ''
+  return anchor
+    ? `已找到与你的问题相关的已学资料，优先参考「${anchor.label}」。\n\n`
+    : '已找到与你的问题相关的已学资料，我会优先沿用其中的方法。\n\n'
 }
 
-export function safeLevelAnswer(level: StoredHintLevel, answer: string, hasSources: boolean): string {
-  const limits: Record<StoredHintLevel, number> = { diagnose: 500, hint: 700, key_step: 1200, solution: 8000 }
-  const looksLikeFullSolution = /(?:完整解答|最终答案|答案为|综上所述|故选|所以\s*[A-D]|第[一二三四五六]步)/.test(answer)
-  if (level !== 'solution' && looksLikeFullSolution) return fallbackAnswer(level, hasSources)
-  return answer.slice(0, limits[level])
+export function fallbackAnswer(level: StoredHintLevel, hasSources: boolean, anchor?: TutorSourceAnchor): string {
+  const lead = sourceLead(hasSources, anchor)
+  if (level === 'diagnose') return `${lead}先确认卡点：你是还没有确定第一步，还是已经列出关系式但无法继续？请把最先不确定的等式或步骤发来。`
+  if (level === 'hint') return `${lead}先只做一步：分别写出已知量、目标量和限制条件，再判断它们能由哪个定义或公式连接。暂时不要展开后续计算。`
+  if (level === 'key_step') return `${lead}关键步骤是把题目的文字或几何条件转成可检验的数学关系。完成列式后先检查定义域、单位和符号，再继续计算；这里先不展开最终结果。`
+  return `${lead}请沿“整理条件 → 选择方法 → 建立关系 → 计算 → 检验”的顺序完成，并逐步保留等价变形。`
+}
+
+export const TUTOR_SCAFFOLD_CODES = [
+  'conditions',
+  'representation',
+  'method',
+  'relation',
+  'calculation',
+  'verification',
+  'unclear',
+] as const
+
+export type TutorScaffoldCode = typeof TUTOR_SCAFFOLD_CODES[number]
+
+const SCAFFOLD_CODE_SET = new Set<string>(TUTOR_SCAFFOLD_CODES)
+const SCAFFOLD_ANSWERS: Record<Exclude<StoredHintLevel, 'solution'>, Record<TutorScaffoldCode, string>> = {
+  diagnose: {
+    conditions: '先定位卡点：你是不确定题目给了哪些有效条件，还是不确定哪个条件应先使用？请只列出你已经确认的条件。',
+    representation: '先定位卡点：你是不确定怎样把文字、图形或实验现象转成学科表达吗？请说出最难翻译的那一条信息。',
+    method: '先定位卡点：你是想不到可用的方法，还是有多个方法但不知道如何选择？请说出你已经想到的候选方法。',
+    relation: '先定位卡点：你是不知道设什么量，还是已经设量但列不出连接已知与目标的关系？请把当前设量发来。',
+    calculation: '先定位卡点：你的关系已经建立，但卡在变形或计算吗？请发来最先无法继续的那一步，不必继续算。',
+    verification: '先定位卡点：你已经得到候选结果，但不确定怎样检验条件、范围或单位吗？请先说出你准备核对的限制。',
+    unclear: '先确认卡点：你是还没有确定第一步，还是已经列出关系式但无法继续？请把最先不确定的等式或步骤发来。',
+  },
+  hint: {
+    conditions: '先只做一步：把显式条件与容易遗漏的限制分开列出，并圈出直接涉及目标量的条件。暂时不要计算。',
+    representation: '先只做一步：把最关键的一条文字、图形或实验信息改写成规范的学科表达，再检查对象和方向是否对应。',
+    method: '先只做一步：回忆一个能直接连接目标量与已知条件的定义、定理或基本模型，并先核对它的使用条件。',
+    relation: '先只做一步：设最少的必要未知量，只建立一条连接已知与目标的关系；列好后先不要展开计算。',
+    calculation: '先只做一步：回到最后一个确定正确的等价步骤，检查符号、括号和运算对象，再完成下一次变形。',
+    verification: '先只做一步：逐项核对定义域、取值范围、单位、方向或题设限制，看候选结果是否全部满足。',
+    unclear: '先只做一步：分别写出已知量、目标量和限制条件，再判断它们能由哪个定义或公式连接。暂时不要展开后续计算。',
+  },
+  key_step: {
+    conditions: '关键步骤是先筛出真正参与求解的条件，并区分等价条件与附加限制。按目标量倒推需要哪些中间关系，但先不做最终计算。',
+    representation: '关键步骤是把文字、图形或实验条件逐条转成可检验的学科关系，再核对对象、方向和适用范围。关系建立后先停在这里。',
+    method: '关键步骤是先用适用条件排除不匹配的方法，再选择能最短连接已知与目标的定义、定理或模型。先写方法链，不展开最终结果。',
+    relation: '关键步骤是选取最少的必要未知量，并让每个有效条件各对应一条关系。关系数量与未知量匹配后，再检查是否存在遗漏限制。',
+    calculation: '关键步骤是从最后一个确定正确的关系继续做等价变形，每次只改变一个环节，并同步检查符号、括号和运算对象；省略最后计算。',
+    verification: '关键步骤是把候选结果依次代回原始条件，并检查定义域、范围、单位、方向及特殊情形。这里只说明检验顺序，不给最终结论。',
+    unclear: '关键步骤是把题目的条件转成可检验的学科关系。完成列式后先检查适用范围、单位和符号，再继续计算；这里不展开最终结果。',
+  },
+}
+
+interface TutorScaffoldSelection {
+  scaffold: TutorScaffoldCode
+  anchorId?: string
+}
+
+function scaffoldSelectionFromModel(value: string): TutorScaffoldSelection | null {
+  try {
+    const parsed = JSON.parse(value) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+    const row = parsed as Record<string, unknown>
+    if (Object.keys(row).some((key) => key !== 'scaffold' && key !== 'anchorId')) return null
+    const code = row.scaffold
+    if (typeof code !== 'string' || !SCAFFOLD_CODE_SET.has(code)) return null
+    if (row.anchorId !== undefined && typeof row.anchorId !== 'string') return null
+    return { scaffold: code as TutorScaffoldCode, anchorId: row.anchorId }
+  } catch {
+    return null
+  }
+}
+
+export function safeLevelAnswer(
+  level: StoredHintLevel,
+  answer: string,
+  hasSources: boolean,
+  anchors: TutorSourceAnchor[] = [],
+): string {
+  const normalized = answer.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u200B-\u200D\u2060\uFEFF]/g, '').trim()
+  const firstAnchor = hasSources ? anchors[0] : undefined
+  if (!normalized) return fallbackAnswer(level, hasSources, firstAnchor)
+  if (level === 'solution') return normalized.slice(0, 8000)
+  const selection = scaffoldSelectionFromModel(normalized)
+  if (!selection) return fallbackAnswer(level, hasSources, firstAnchor)
+  const selectedAnchor = hasSources
+    ? anchors.find((anchor) => anchor.id === selection.anchorId) ?? firstAnchor
+    : undefined
+  return `${sourceLead(hasSources, selectedAnchor)}${SCAFFOLD_ANSWERS[level][selection.scaffold]}`
 }
