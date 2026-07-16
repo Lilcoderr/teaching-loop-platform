@@ -123,8 +123,8 @@ export function AppShell() {
           <div>
             {demoMode && <span className="demo-badge">演示</span>}
             <Avatar name={state.currentUser.displayName} color={state.currentUser.avatarColor} size="sm" />
-            <button type="button" className="icon-button" onClick={() => setPasswordOpen(true)} title="修改密码"><KeyRound size={17} /></button>
-            <button type="button" className="icon-button mobile-signout" onClick={() => void signOut()} title="退出登录"><LogOut size={17} /></button>
+            <button type="button" className="icon-button" onClick={() => setPasswordOpen(true)} title="修改密码" aria-label="修改密码"><KeyRound size={18} /></button>
+            <button type="button" className="icon-button mobile-signout" onClick={() => void signOut()} title="退出登录" aria-label="退出登录"><LogOut size={18} /></button>
           </div>
         </header>
         {syncError && initialDataReady && <div className="sync-error-banner" role="alert"><AlertTriangle size={18} /><span>{syncError}</span><button type="button" onClick={() => void retrySync()} disabled={syncRetrying}><RefreshCw className={syncRetrying ? 'spin' : undefined} size={16} />重试</button></div>}

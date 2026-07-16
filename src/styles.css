@@ -715,6 +715,7 @@ p {
   }
   .mobile-header .brand-icon { width: 34px; height: 34px; }
   .mobile-header > div { display: flex; align-items: center; gap: 8px; }
+  .mobile-header .icon-button { width: 40px; height: 40px; color: var(--ink); background: var(--surface); }
   .demo-badge { min-height: 23px; padding: 0 8px; background: var(--amber-soft); color: #92400e; }
   .mobile-nav {
     position: fixed;
@@ -1685,6 +1686,7 @@ html[data-ui-theme="data"] .data-table th { border-bottom-color: #aeb8b2; backgr
 html[data-ui-theme="data"] .segmented-control { border-radius: 4px; background: #dfe5e1; }
 html[data-ui-theme="data"] .mobile-header,
 html[data-ui-theme="data"] .mobile-nav { background: #202723; color: #f7faf8; }
+html[data-ui-theme="data"] .mobile-header .icon-button { border-color: rgba(255,255,255,0.28); background: rgba(255,255,255,0.08); color: #f7faf8; }
 html[data-ui-theme="data"] .mobile-nav a { color: #b8c5be; }
 html[data-ui-theme="data"] .mobile-nav a.active { background: #d8f3e8; color: #135846; }
 html[data-ui-theme="data"] .student-home-quick { border: 0; background: transparent; box-shadow: none; }
