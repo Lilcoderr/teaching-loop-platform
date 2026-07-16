@@ -91,7 +91,14 @@ async function prepareTutorImage(file: File): Promise<TutorImageInput> {
 
 function hasMeaningfulAttempt(value: string) {
   const text = value.trim()
-  return text.length >= 8 && /(?:[0-9A-Za-z]|[=+\-*/^<>≤≥√∠]|\\[A-Za-z]+)/.test(text)
+  if (text.length < 8) return false
+  const compact = text.normalize('NFKC').replace(/\s+/g, '')
+  if (!compact || /^(.{1,4})\1+$/u.test(compact)) return false
+  const semanticCharacters = compact.replace(/[^0-9A-Za-z\u3400-\u9fff]/g, '').toLowerCase()
+  if (semanticCharacters.length < 5 || new Set(semanticCharacters).size < 3) return false
+  const hasMathWork = /(?:[A-Za-z]\w*\s*[=<>≤≥]|[=<>≤≥]\s*(?:[-+]?\d|[A-Za-z])|(?:\d|[A-Za-z])\s*[+\-*/^]|[+\-*/^]\s*(?:\d|[A-Za-z])|\\(?:frac|sqrt|sin|cos|tan|log|ln|sum|int|vec|overrightarrow)\b)/i.test(text)
+  const hasReasoningWork = /(?:设(?:置)?|令|由|因为|所以|代入|联立|化简|移项|展开|因式分解|求导|构造|作图|根据|先求|先算|检验|代回|列出|方程|函数|斜率|向量|受力|守恒|反应|浓度|物质的量)/.test(text)
+  return hasMathWork || hasReasoningWork
 }
 
 export function TutorPage() {

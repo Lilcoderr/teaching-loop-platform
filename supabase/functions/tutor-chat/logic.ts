@@ -1,5 +1,6 @@
 export type AnswerMode = 'diagnose' | 'hint' | 'steps' | 'solution'
 export type StoredHintLevel = 'diagnose' | 'hint' | 'key_step' | 'solution'
+export type TutorSubject = 'math' | 'physics' | 'chemistry'
 
 export const MAX_TUTOR_IMAGE_BYTES = 4 * 1024 * 1024
 
@@ -146,8 +147,7 @@ export function buildSafeSourceAnchors(
   for (const candidate of candidates) {
     if (anchors.length >= Math.min(Math.max(limit, 0), 12)) break
     if (!SAFE_ANCHOR_ID.test(candidate.id) || ids.has(candidate.id)) continue
-    const hasSafeLabel = candidate.labels.some((label) => sanitizeTutorSourceLabel(label) !== null)
-    if (!hasSafeLabel) continue
+    if (!(candidate.sourceType in typeLabels)) continue
     const ordinal = (typeCounts.get(candidate.sourceType) ?? 0) + 1
     typeCounts.set(candidate.sourceType, ordinal)
     ids.add(candidate.id)
@@ -239,7 +239,37 @@ export function validateTutorImage(value: unknown): { image?: TutorImage; error?
 
 export function meaningfulAttempt(value: string | undefined): boolean {
   const attempt = value?.trim() ?? ''
-  return attempt.length >= 8 && /(?:[0-9A-Za-z]|[=+\-*/^<>≤≥√∠]|\\[A-Za-z]+)/.test(attempt)
+  if (attempt.length < 8) return false
+  const compact = attempt.normalize('NFKC').replace(/\s+/g, '')
+  if (!compact || /^(.{1,4})\1+$/u.test(compact)) return false
+  const semanticCharacters = compact.replace(/[^0-9A-Za-z\u3400-\u9fff]/g, '').toLowerCase()
+  if (semanticCharacters.length < 5 || new Set(semanticCharacters).size < 3) return false
+  const hasMathWork = /(?:[A-Za-z]\w*\s*[=<>≤≥]|[=<>≤≥]\s*(?:[-+]?\d|[A-Za-z])|(?:\d|[A-Za-z])\s*[+\-*/^]|[+\-*/^]\s*(?:\d|[A-Za-z])|\\(?:frac|sqrt|sin|cos|tan|log|ln|sum|int|vec|overrightarrow)\b)/i.test(attempt)
+  const hasReasoningWork = /(?:设(?:置)?|令|由|因为|所以|代入|联立|化简|移项|展开|因式分解|求导|构造|作图|根据|先求|先算|检验|代回|列出|方程|函数|斜率|向量|受力|守恒|反应|浓度|物质的量)/.test(attempt)
+  return hasMathWork || hasReasoningWork
+}
+
+export type TutorSubjectResolution =
+  | { subjects: TutorSubject[]; error?: never }
+  | { subjects?: never; error: 'invalid_subject' | 'subject_not_allowed' | 'subjects_missing' }
+
+export function resolveTutorSubjects(
+  requestedSubject: unknown,
+  profileSubjects: unknown,
+): TutorSubjectResolution {
+  const allowedSubjects = Array.isArray(profileSubjects)
+    ? [...new Set(profileSubjects.filter((subject): subject is TutorSubject => (
+      subject === 'math' || subject === 'physics' || subject === 'chemistry'
+    )))]
+    : []
+  if (requestedSubject !== undefined && requestedSubject !== null && requestedSubject !== '') {
+    if (requestedSubject !== 'math' && requestedSubject !== 'physics' && requestedSubject !== 'chemistry') {
+      return { error: 'invalid_subject' }
+    }
+    if (!allowedSubjects.includes(requestedSubject)) return { error: 'subject_not_allowed' }
+    return { subjects: [requestedSubject] }
+  }
+  return allowedSubjects.length ? { subjects: allowedSubjects } : { error: 'subjects_missing' }
 }
 
 function searchTerms(value: string): Set<string> {
@@ -299,6 +329,97 @@ export function selectRelevantWrongItems<T extends WrongItemCandidate>(items: T[
     Array.isArray(item.knowledge_points) ? item.knowledge_points.join(' ') : '',
     item.teacher_note,
   ].filter(Boolean).join('\n'))).slice(0, limit)
+}
+
+export interface ValidatedTutorModelAnswer {
+  answer: string
+  usedSourceIds: string[]
+}
+
+const MODEL_TEXT_CONTROL = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u200B-\u200F\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/
+const MODEL_DISCLOSURE = /(?:system\s*prompt|developer\s*message|api\s*key|服务端密钥|系统提示词|内部指令|内部路径|其他学生信息)/i
+const LOWER_MODE_ANSWER_LEAK = /(?:\\boxed|最终(?:答案|结果|结论)|答案\s*(?:为|是|[:：])|结果\s*(?:为|是|[:：])|故\s*(?:选|答案)|(?:正确|应选|选择)\s*(?:选项)?\s*[A-D](?:\s*项)?|解得\s*(?:\\?\(|[A-Za-z\u3400-\u9fff]){0,12}\s*(?:=|>|<|≥|≤|∈)|所以\s*(?:\\?\(|[A-Za-z\u3400-\u9fff]){0,12}\s*(?:=|>|<|≥|≤|∈))/i
+const LOWER_MODE_NUMERIC_CONCLUSION = /(?:(?:得到|可得|从而|因此|求出|算出|推出)[^。；\n]{0,24}(?:=|>|<|≥|≤|∈)\s*(?:[-+]?\d|[A-D](?:\s*项)?|\\(?:frac|sqrt))|(?:^|[。；\n])\s*[A-Za-z][A-Za-z0-9_]*\s*=\s*[-+]?\d+(?:\.\d+)?\s*(?:[。；]|$))/im
+
+function strictModelText(value: unknown, min: number, max: number): string | null {
+  if (typeof value !== 'string' || MODEL_TEXT_CONTROL.test(value)) return null
+  const normalized = value.normalize('NFKC').replace(/[ \t]+\n/g, '\n').trim()
+  return normalized.length >= min && normalized.length <= max ? normalized : null
+}
+
+function hasExactKeys(row: Record<string, unknown>, keys: string[]): boolean {
+  const actual = Object.keys(row).sort()
+  const expected = [...keys].sort()
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index])
+}
+
+function validatedSourceIds(value: unknown, anchors: TutorSourceAnchor[]): string[] | null {
+  if (!Array.isArray(value) || value.length > 4) return null
+  const allowed = new Set(anchors.map((anchor) => anchor.id))
+  if (value.some((id) => typeof id !== 'string' || !allowed.has(id))) return null
+  const ids = value as string[]
+  return new Set(ids).size === ids.length ? ids : null
+}
+
+function hasUnsafeModelText(values: string[], lowerMode: boolean): boolean {
+  const combined = values.join('\n')
+  return MODEL_DISCLOSURE.test(combined)
+    || (lowerMode && (LOWER_MODE_ANSWER_LEAK.test(combined) || LOWER_MODE_NUMERIC_CONCLUSION.test(combined)))
+}
+
+export function validateTutorModelAnswer(
+  level: StoredHintLevel,
+  rawAnswer: string,
+  anchors: TutorSourceAnchor[] = [],
+): ValidatedTutorModelAnswer | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(rawAnswer.trim())
+  } catch {
+    return null
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+  const row = parsed as Record<string, unknown>
+  const usedSourceIds = validatedSourceIds(row.usedSourceIds, anchors)
+  if (!usedSourceIds) return null
+  const selectedAnchor = anchors.find((anchor) => anchor.id === usedSourceIds[0])
+  const lead = sourceLead(usedSourceIds.length > 0, selectedAnchor)
+
+  if (level === 'diagnose') {
+    if (!hasExactKeys(row, ['blocker', 'checkQuestion', 'usedSourceIds'])) return null
+    const blocker = strictModelText(row.blocker, 8, 220)
+    const checkQuestion = strictModelText(row.checkQuestion, 6, 140)
+    if (!blocker || !checkQuestion || hasUnsafeModelText([blocker, checkQuestion], true)) return null
+    return { answer: `${lead}**卡点诊断**\n\n${blocker}\n\n**请先确认**\n\n${checkQuestion}`, usedSourceIds }
+  }
+
+  if (level === 'hint') {
+    if (!hasExactKeys(row, ['hint', 'nextAction', 'usedSourceIds'])) return null
+    const hint = strictModelText(row.hint, 8, 300)
+    const nextAction = strictModelText(row.nextAction, 6, 180)
+    if (!hint || !nextAction || hasUnsafeModelText([hint, nextAction], true)) return null
+    return { answer: `${lead}**一级提示**\n\n${hint}\n\n**现在先做**\n\n${nextAction}`, usedSourceIds }
+  }
+
+  if (level === 'key_step') {
+    if (!hasExactKeys(row, ['approach', 'steps', 'checkpoint', 'usedSourceIds'])) return null
+    const approach = strictModelText(row.approach, 8, 320)
+    const checkpoint = strictModelText(row.checkpoint, 6, 200)
+    if (!approach || !checkpoint || !Array.isArray(row.steps) || row.steps.length < 1 || row.steps.length > 4) return null
+    const steps = row.steps.map((step) => strictModelText(step, 4, 260))
+    if (steps.some((step) => !step)) return null
+    const safeSteps = steps as string[]
+    if (hasUnsafeModelText([approach, ...safeSteps, checkpoint], true)) return null
+    return {
+      answer: `${lead}**解题路径**\n\n${approach}\n\n${safeSteps.map((step, index) => `${index + 1}. ${step}`).join('\n')}\n\n**停步检查**\n\n${checkpoint}`,
+      usedSourceIds,
+    }
+  }
+
+  if (!hasExactKeys(row, ['solution', 'usedSourceIds'])) return null
+  const solution = strictModelText(row.solution, 20, 8000)
+  if (!solution || hasUnsafeModelText([solution], false)) return null
+  return { answer: `${lead}${solution}`, usedSourceIds }
 }
 
 function sourceLead(hasSources: boolean, anchor?: TutorSourceAnchor): string {

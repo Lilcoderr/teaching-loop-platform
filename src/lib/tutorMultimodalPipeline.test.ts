@@ -6,6 +6,7 @@ import {
 } from '../../supabase/functions/tutor-chat/logic'
 
 const tutorFunction = readFileSync('supabase/functions/tutor-chat/index.ts', 'utf8')
+const modelAdapter = readFileSync('supabase/functions/_shared/model.ts', 'utf8')
 
 describe('tutor multimodal pipeline', () => {
   it('uses one vision pass for transcription and a text pass for the final answer', () => {
@@ -21,20 +22,22 @@ describe('tutor multimodal pipeline', () => {
     expect(tutorFunction).toContain('图片答疑暂未启用，请先输入题目文字')
   })
 
-  it('locks lower levels to JSON scaffold selection and withholds inline source excerpts', () => {
-    expect(tutorFunction).toContain("json: hintLevel !== 'solution'")
-    expect(tutorFunction).toContain('"focusCodes":["分类代码"]')
-    expect(tutorFunction).not.toContain('guidance')
-    expect(tutorFunction).toContain("maxOutputTokens: hintLevel === 'solution' ? 1800 : 180")
+  it('uses strict question-specific JSON schemas and withholds lower-mode source excerpts', () => {
+    expect(tutorFunction).toContain('json: true')
+    expect(tutorFunction).toContain('"blocker":"结合本题和学生尝试定位的具体卡点"')
+    expect(tutorFunction).toContain('"hint":"针对本题条件、符号或图形关系的一级提示"')
+    expect(tutorFunction).toContain('"steps":["关键步骤 1","关键步骤 2"]')
+    expect(tutorFunction).not.toContain('所有学生可见文字都由服务端固定模板生成')
+    expect(tutorFunction).toContain('maxOutputTokens: LEVEL_MAX_OUTPUT_TOKENS[hintLevel]')
     expect(tutorFunction).toContain("const exposeCitationExcerpt = hintLevel === 'solution'")
     expect(tutorFunction).toContain("excerpt: exposeCitationExcerpt ? chunk.content.slice(0, 500) : ''")
   })
 
-  it('routes source context through the level-aware prompt guard and anchor whitelist', () => {
+  it('routes source context through validation and saves only model-declared whitelisted citations', () => {
     expect(tutorFunction).toContain('buildTutorRetrievalPromptBlock(hintLevel, sourceAnchors, contextLines)')
-    expect(tutorFunction).toContain('safeLevelAnswer(hintLevel, modelResult.text, hasSources, sourceAnchors)')
-    expect(tutorFunction).toContain('anchorId 必须输出且只能从 ${sourceAnchors.map((anchor) => anchor.id).join')
-    expect(tutorFunction).toContain('${TUTOR_FOCUS_CODES.join')
+    expect(tutorFunction).toContain('validateTutorModelAnswer(hintLevel, modelResult.text, sourceAnchors)')
+    expect(tutorFunction).toContain('usedSourceIds 只列出回答中实际使用的白名单来源 ID')
+    expect(tutorFunction).toContain('.filter((citation) => usedSourceIds.has(citation.answerSourceId))')
     expect(tutorFunction).toContain("labels: [item.knowledge_points.join('、'), item.title]")
   })
 
@@ -55,8 +58,8 @@ describe('tutor multimodal pipeline', () => {
       expect(prompt).toContain('<untrusted_authorized_retrieval_context>')
       for (const body of sourceBodies) expect(prompt).toContain(body)
     }
-    expect(tutorFunction).toContain("json: hintLevel !== 'solution'")
-    expect(tutorFunction).toContain('safeLevelAnswer(hintLevel, modelResult.text, hasSources, sourceAnchors)')
+    expect(tutorFunction).toContain('json: true')
+    expect(tutorFunction).toContain('validateTutorModelAnswer(hintLevel, modelResult.text, sourceAnchors)')
   })
 
   it('retains full authorized source context only for complete solutions', () => {
@@ -72,5 +75,23 @@ describe('tutor multimodal pipeline', () => {
     expect(tutorFunction.match(/tutorCitationMetadata\(/g)).toHaveLength(3)
     expect(tutorFunction).toContain('exposeCitationExcerpt ? chunk.heading || chunk.relative_path : chunk.heading')
     expect(tutorFunction).toContain('exposeCitationExcerpt ? item.teacher_note : `错题 ${item.question_number}`')
+  })
+
+  it('falls back to typed text when image transcription fails, but retries image-only requests', () => {
+    expect(tutorFunction).toContain("message === '请分析这张题目图片'")
+    expect(tutorFunction).toContain('const imageFallbackUsed = Boolean(aiAllowed && image && !imageTranscriptionResult && hasExplicitMessage)')
+    expect(tutorFunction).toContain('if (!hasExplicitMessage && !imageTranscriptionResult)')
+    expect(tutorFunction).toContain('本次仅根据你输入的文字回答')
+    expect(tutorFunction).toContain("'model_retryable'")
+  })
+
+  it('enforces a bounded tutor model budget and validates assigned subjects', () => {
+    expect(tutorFunction).toContain('const TUTOR_MODEL_BUDGET_MS = 40_000')
+    expect(tutorFunction).toContain('remainingBeforeEmbedding > 18_000')
+    expect(tutorFunction).toContain('timeoutMs: modelTimeoutWithin(modelDeadline, 24_000)')
+    expect(tutorFunction).toContain('resolveTutorSubjects(body.subject, student.subjects)')
+    expect(tutorFunction).toContain("'subject_not_allowed'")
+    expect(modelAdapter).toContain('options.timeoutMs ?? 45_000')
+    expect(modelAdapter).toContain('options: { timeoutMs?: number } = {}')
   })
 })

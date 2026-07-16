@@ -79,7 +79,11 @@ describe('TutorPage multimodal composer', () => {
     await user.type(screen.getByPlaceholderText('描述题目和你卡住的位置'), '求这道题的答案')
     await user.click(screen.getByRole('button', { name: '完整解答' }))
     expect(screen.getByTitle('发送')).toBeDisabled()
-    await user.type(screen.getByPlaceholderText('先写下你已经尝试的公式、设元或步骤……'), '设直线为 y=kx+b')
+    const attemptInput = screen.getByPlaceholderText('先写下你已经尝试的公式、设元或步骤……')
+    await user.type(attemptInput, '11111111')
+    expect(screen.getByTitle('发送')).toBeDisabled()
+    await user.clear(attemptInput)
+    await user.type(attemptInput, '设直线为 y=kx+b')
     expect(screen.getByTitle('发送')).toBeEnabled()
   })
 
@@ -110,6 +114,23 @@ describe('TutorPage multimodal composer', () => {
     await user.click(screen.getByTitle('发送'))
 
     await waitFor(() => expect(mocks.sendTutorMessage).toHaveBeenCalledTimes(1))
+  })
+
+  it('keeps the question and attempted work when a retryable model request fails', async () => {
+    mocks.sendTutorMessage.mockRejectedValueOnce(new Error('AI 暂时没有返回回答，你的输入仍保留在页面中，请直接重试。'))
+    const user = userEvent.setup()
+    render(<TutorPage />)
+
+    const questionInput = screen.getByPlaceholderText('描述题目和你卡住的位置')
+    await user.type(questionInput, '求椭圆在给定点处的切线方程')
+    await user.click(screen.getByRole('button', { name: '完整解答' }))
+    const attemptInput = screen.getByPlaceholderText('先写下你已经尝试的公式、设元或步骤……')
+    await user.type(attemptInput, '设切点为 P(x0,y0)，并代入椭圆方程')
+    await user.click(screen.getByTitle('发送'))
+
+    expect(await screen.findByText('AI 暂时没有返回回答，你的输入仍保留在页面中，请直接重试。')).toBeInTheDocument()
+    expect(questionInput).toHaveValue('求椭圆在给定点处的切线方程')
+    expect(attemptInput).toHaveValue('设切点为 P(x0,y0)，并代入椭圆方程')
   })
 
   it('disables new questions when the text model is not connected in production', async () => {

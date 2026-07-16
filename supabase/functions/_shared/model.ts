@@ -57,7 +57,7 @@ export function embeddingModelConfigured(requestedModel?: string): boolean {
 
 export async function chatCompletion(
   messages: ModelMessage[],
-  options: { model?: string; json?: boolean; temperature?: number; kind?: 'text' | 'vision'; maxOutputTokens?: number } = {},
+  options: { model?: string; json?: boolean; temperature?: number; kind?: 'text' | 'vision'; maxOutputTokens?: number; timeoutMs?: number } = {},
 ): Promise<ModelResult | null> {
   const kind = options.kind ?? 'text'
   const url = endpoint('/chat/completions', kind)
@@ -76,7 +76,7 @@ export async function chatCompletion(
         max_tokens: Math.min(Math.max(options.maxOutputTokens ?? 1200, 100), 2400),
         ...(options.json ? { response_format: { type: 'json_object' } } : {}),
       }),
-      signal: AbortSignal.timeout(45_000),
+      signal: AbortSignal.timeout(Math.min(Math.max(options.timeoutMs ?? 45_000, 1_000), 45_000)),
     })
     if (!response.ok) {
       console.error('AI request failed', response.status, (await response.text()).slice(0, 500))
@@ -97,7 +97,11 @@ export async function chatCompletion(
   }
 }
 
-export async function embedTexts(texts: string[], requestedModel?: string): Promise<number[][] | null> {
+export async function embedTexts(
+  texts: string[],
+  requestedModel?: string,
+  options: { timeoutMs?: number } = {},
+): Promise<number[][] | null> {
   if (!texts.length) return []
   const url = endpoint('/embeddings', 'embedding')
   const key = configuredValue('embedding', 'API_KEY')
@@ -108,7 +112,7 @@ export async function embedTexts(texts: string[], requestedModel?: string): Prom
       method: 'POST',
       headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ model, input: texts, dimensions: 1536 }),
-      signal: AbortSignal.timeout(45_000),
+      signal: AbortSignal.timeout(Math.min(Math.max(options.timeoutMs ?? 45_000, 1_000), 45_000)),
     })
     if (!response.ok) {
       console.error('Embedding request failed', response.status, (await response.text()).slice(0, 500))

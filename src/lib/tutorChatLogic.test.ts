@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 import {
   buildSafeSourceAnchors,
   buildTutorRetrievalPromptBlock,
+  meaningfulAttempt,
   resolveAnswerMode,
+  resolveTutorSubjects,
   safeLevelAnswer,
   safeTutorCitationMetadata,
   sanitizeTutorSourceLabel,
@@ -10,6 +12,7 @@ import {
   selectRelevantWrongItems,
   TUTOR_FOCUS_CODES,
   tutorCitationMetadata,
+  validateTutorModelAnswer,
   validateTutorImage,
 } from '../../supabase/functions/tutor-chat/logic'
 
@@ -195,6 +198,84 @@ describe('tutor answer modes', () => {
   it('does not alter a complete solution when the server has unlocked solution mode', () => {
     const solution = '完整解答：由方程解得 \\(x=2\\)，所以最终答案为 2。'
     expect(safeLevelAnswer('solution', solution, false)).toBe(solution)
+  })
+})
+
+describe('personalized tutor model output', () => {
+  const anchors = buildSafeSourceAnchors([
+    { id: 'k1', labels: ['椭圆切线'], sourceType: 'lecture' },
+    { id: 'w1', labels: ['切点设错'], sourceType: 'wrong_item' },
+  ])
+
+  it('accepts question-specific fields and returns only actually used source ids', () => {
+    const result = validateTutorModelAnswer('hint', JSON.stringify({
+      hint: '先把切点写成 (x_0,y_0)，再利用切点同时满足椭圆方程这一条件。',
+      nextAction: '只代入切点坐标，先不要展开后续斜率计算。',
+      usedSourceIds: ['k1'],
+    }), anchors)
+
+    expect(result?.answer).toContain('切点写成')
+    expect(result?.answer).toContain('优先参考「讲义方法 1」')
+    expect(result?.usedSourceIds).toEqual(['k1'])
+  })
+
+  it('supports distinct strict schemas for diagnosis, key steps, and full solutions', () => {
+    const diagnosis = validateTutorModelAnswer('diagnose', JSON.stringify({
+      blocker: '你已经写出椭圆方程，但还没有把切点条件转成可用关系。',
+      checkQuestion: '你能确认当前设的点在椭圆上吗？',
+      usedSourceIds: [],
+    }), anchors)
+    const steps = validateTutorModelAnswer('key_step', JSON.stringify({
+      approach: '先用切点条件固定坐标关系，再建立切线斜率关系。',
+      steps: ['把切点代入椭圆方程。', '用切线方向写出斜率关系，但停在求值前。'],
+      checkpoint: '检查切点是否满足原椭圆方程。',
+      usedSourceIds: ['k1', 'w1'],
+    }), anchors)
+    const solution = validateTutorModelAnswer('solution', JSON.stringify({
+      solution: '由切点满足椭圆方程建立第一个关系，再联立切线条件完成计算并核对结果。',
+      usedSourceIds: ['k1'],
+    }), anchors)
+
+    expect(diagnosis?.answer).toContain('卡点诊断')
+    expect(steps?.answer).toContain('1. 把切点代入')
+    expect(steps?.usedSourceIds).toEqual(['k1', 'w1'])
+    expect(solution?.answer).toContain('完成计算并核对结果')
+  })
+
+  it.each([
+    { hint: '先利用切点条件。', nextAction: '写出切点坐标。', usedSourceIds: ['k99'] },
+    { hint: '先利用切点条件。', nextAction: '写出切点坐标。', usedSourceIds: ['k1'], answer: 'x=2' },
+    { hint: '最终答案为 2。', nextAction: '直接填写结果。', usedSourceIds: [] },
+    { hint: '由题设条件可以直接得到 x=2。', nextAction: '把这个数值填入答题卡。', usedSourceIds: [] },
+    { hint: '先利用切点条件。', nextAction: '写出切点坐标。', usedSourceIds: ['k1', 'k1'] },
+  ])('rejects forged citations, expanded schemas, and lower-mode answer leakage: %j', (payload) => {
+    expect(validateTutorModelAnswer('hint', JSON.stringify(payload), anchors)).toBeNull()
+  })
+
+  it('requires source ids to remain empty when no source is available', () => {
+    expect(validateTutorModelAnswer('diagnose', JSON.stringify({
+      blocker: '你还没有把递推条件改写成相邻两项之间的关系。',
+      checkQuestion: '你能先写出相邻两项的下标差吗？',
+      usedSourceIds: ['k1'],
+    }), [])).toBeNull()
+  })
+})
+
+describe('tutor request guards', () => {
+  it.each(['11111111', 'aaaaaaaa', '12345678', 'abcdabcd', '=+=+=+=+'])('rejects meaningless attempts: %s', (attempt) => {
+    expect(meaningfulAttempt(attempt)).toBe(false)
+  })
+
+  it.each(['设直线为 y=kx+b', '由能量守恒列出两个状态的关系', '先求导，再令 f\'(x)=0'])('accepts substantive attempts: %s', (attempt) => {
+    expect(meaningfulAttempt(attempt)).toBe(true)
+  })
+
+  it('only permits subjects assigned to the current student', () => {
+    expect(resolveTutorSubjects('math', ['math', 'physics'])).toEqual({ subjects: ['math'] })
+    expect(resolveTutorSubjects('chemistry', ['math', 'physics'])).toEqual({ error: 'subject_not_allowed' })
+    expect(resolveTutorSubjects('history', ['math'])).toEqual({ error: 'invalid_subject' })
+    expect(resolveTutorSubjects(undefined, ['math', 'unknown', 'physics'])).toEqual({ subjects: ['math', 'physics'] })
+    expect(resolveTutorSubjects(undefined, [])).toEqual({ error: 'subjects_missing' })
   })
 })
 
