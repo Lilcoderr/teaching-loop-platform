@@ -84,7 +84,7 @@ function SubmissionUploadPage({ mode }: { mode: UploadMode }) {
     <>
       <PageHeader
         title={mode === 'assignment' ? '提交今日作业' : '上传错题或不会的题'}
-        description={mode === 'assignment' ? '上传完整作答过程，AI 初批后由老师在线确认和批改。' : '把题面和你的尝试一起上传，老师会整理卡点并安排后续复习。'}
+        description={mode === 'assignment' ? '上传完整作答过程；图片会尝试 AI 初批，PDF 原件由老师在线批改。' : '把题面和你的尝试一起上传，老师会整理卡点并安排后续复习。'}
       />
       {success && (
         <section className="upload-success" role="status" aria-live="polite">

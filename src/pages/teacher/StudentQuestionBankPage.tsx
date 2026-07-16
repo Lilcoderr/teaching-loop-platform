@@ -1,5 +1,5 @@
 import { Archive, BadgeCheck, BookOpenCheck, Check, CheckCircle2, LoaderCircle, ScanSearch, Search, Send, XCircle } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { AttachmentGallery } from '../../components/AttachmentGallery'
 import { EmptyState } from '../../components/EmptyState'
@@ -26,6 +26,8 @@ export function StudentQuestionBankPage() {
   const [operationError, setOperationError] = useState('')
   const [rejecting, setRejecting] = useState(false)
   const [rejectReason, setRejectReason] = useState('图片不清晰或内容不完整，请重新上传完整题面和作答过程。')
+  const initializedUploadId = useRef('')
+  const formDirty = useRef(false)
   const student = state.students.find((item) => item.id === studentId)
   const normalizedQuery = query.trim().toLocaleLowerCase('zh-CN')
   const confirmedItems = useMemo(() => state.wrongItems.filter((item) => {
@@ -57,6 +59,7 @@ export function StudentQuestionBankPage() {
   const selectedIsConfirmed = Boolean(
     selectedUpload?.status === 'scheduled' || selectedUpload?.archivedToWrongBook || selectedWrongItems.some((item) => item.evidenceState === 'teacher_verified'),
   )
+  const selectedReviewReady = Boolean(selectedUpload && ['uploaded', 'needs_review', 'failed'].includes(selectedUpload.status))
 
   useEffect(() => {
     const requestedId = searchParams.get('submission')
@@ -68,6 +71,8 @@ export function StudentQuestionBankPage() {
   }, [searchParams, state.submissions])
 
   useEffect(() => {
+    const switchingUpload = initializedUploadId.current !== selectedUploadId
+    if (!switchingUpload && formDirty.current) return
     setTeacherHint((selectedUpload?.teacherHint ?? '').replace(/^第[^：:\n]+题[：:]\s*/, ''))
     setTeacherEvaluation(selectedUpload?.teacherEvaluation ?? '')
     const confirmedTags = selectedWrongItems
@@ -77,7 +82,14 @@ export function StudentQuestionBankPage() {
     setOperationError('')
     setRejecting(false)
     setRejectReason('图片不清晰或内容不完整，请重新上传完整题面和作答过程。')
-  }, [selectedDraft, selectedUpload, selectedWrongItems])
+    initializedUploadId.current = selectedUploadId
+    formDirty.current = false
+  }, [selectedDraft, selectedUpload, selectedUploadId, selectedWrongItems])
+
+  const markFormDirty = () => {
+    formDirty.current = true
+    setOperationError('')
+  }
 
   const openUpload = (submissionId: string) => {
     setSelectedUploadId(submissionId)
@@ -123,6 +135,7 @@ export function StudentQuestionBankPage() {
 
   const confirmUpload = async () => {
     if (!selectedUpload || busy || selectedIsConfirmed) return
+    if (!selectedReviewReady) return setOperationError('AI 正在分析该题，完成后才能纳入长期错题。')
     const validationError = feedbackError()
     if (validationError) return setOperationError(validationError)
     setBusy(true)
@@ -146,6 +159,7 @@ export function StudentQuestionBankPage() {
 
   const rejectUpload = async () => {
     if (!selectedUpload || busy || selectedIsConfirmed || !rejectReason.trim()) return
+    if (!selectedReviewReady) return setOperationError('AI 正在分析该题，当前不能退回。')
     if (Array.from(rejectReason.trim()).length > 2000) return setOperationError('退回原因最多 2000 个字符')
     setBusy(true)
     setOperationError('')
@@ -203,24 +217,25 @@ export function StudentQuestionBankPage() {
           <button type="button" className="button" onClick={() => setRejecting(false)} disabled={busy}>取消</button>
           <button type="button" className="button danger" onClick={() => void rejectUpload()} disabled={busy || !rejectReason.trim()}>{busy ? <LoaderCircle className="spin" size={16} /> : <XCircle size={16} />}确认退回</button>
         </> : <>
-          {!selectedIsConfirmed && <button type="button" className="button danger" onClick={() => setRejecting(true)} disabled={busy}><XCircle size={16} />退回补充</button>}
+          {!selectedIsConfirmed && <button type="button" className="button danger" onClick={() => setRejecting(true)} disabled={busy || !selectedReviewReady}><XCircle size={16} />退回补充</button>}
           <button type="button" className="button" onClick={() => void saveHint()} disabled={busy || (!teacherHint.trim() && !teacherEvaluation.trim())}>{busy ? <LoaderCircle className="spin" size={16} /> : <Send size={16} />}仅保存提示</button>
           {selectedIsConfirmed
             ? <button type="button" className="button primary" onClick={closeUpload} disabled={busy}><CheckCircle2 size={16} />已纳入长期错题</button>
-            : <button type="button" className="button primary" onClick={() => void confirmUpload()} disabled={busy}>{busy ? <LoaderCircle className="spin" size={16} /> : <CheckCircle2 size={16} />}确认并纳入长期错题</button>}
+            : <button type="button" className="button primary" onClick={() => void confirmUpload()} disabled={busy || !selectedReviewReady}>{busy ? <LoaderCircle className="spin" size={16} /> : <CheckCircle2 size={16} />}确认并纳入长期错题</button>}
         </>}
       >
         {selectedUpload && <div className="teacher-review-form">
           <div><StatusPill status={selectedUpload.status} /></div>
+          {!selectedReviewReady && !selectedIsConfirmed && <p className="form-error" role="status">AI 正在分析，提示可以先保存；确认或退回将在分析结束后开放。</p>}
           <AttachmentGallery attachments={selectedUpload.attachments} title={selectedUpload.title} />
           <div className="student-reflection"><span>学生说明</span><p>{selectedUpload.selfReflection || '学生未填写补充说明'}</p></div>
           {selectedDraft && <div className="analysis-draft"><div className="draft-confidence"><span>AI 初步分析</span><strong>{Math.round(selectedDraft.confidence * 100)}%</strong></div><p>{selectedDraft.summary}</p></div>}
-          <label className="field"><span>给学生的提示（可单独保存）</span><textarea value={teacherHint} maxLength={4000} onChange={(event) => { setTeacherHint(event.target.value); setOperationError('') }} placeholder="给出下一步切入点，不必直接给完整答案。" disabled={busy} /></label>
-          <label className="field"><span>教师评价（可选）</span><textarea value={teacherEvaluation} maxLength={8000} onChange={(event) => { setTeacherEvaluation(event.target.value); setOperationError('') }} placeholder="确认前可记录题目价值、主要问题和后续要求。" disabled={busy} /></label>
-          {rejecting && <label className="field question-bank-reject"><span>退回原因</span><textarea value={rejectReason} maxLength={2000} onChange={(event) => { setRejectReason(event.target.value); setOperationError('') }} placeholder="说明需要重新上传的内容。" disabled={busy} autoFocus /></label>}
+          <label className="field"><span>给学生的提示（可单独保存）</span><textarea value={teacherHint} maxLength={4000} onChange={(event) => { setTeacherHint(event.target.value); markFormDirty() }} placeholder="给出下一步切入点，不必直接给完整答案。" disabled={busy} /></label>
+          <label className="field"><span>教师评价（可选）</span><textarea value={teacherEvaluation} maxLength={8000} onChange={(event) => { setTeacherEvaluation(event.target.value); markFormDirty() }} placeholder="确认前可记录题目价值、主要问题和后续要求。" disabled={busy} /></label>
+          {rejecting && <label className="field question-bank-reject"><span>退回原因</span><textarea value={rejectReason} maxLength={2000} onChange={(event) => { setRejectReason(event.target.value); markFormDirty() }} placeholder="说明需要重新上传的内容。" disabled={busy} autoFocus /></label>}
           <label><BadgeCheck size={16} />教师确认错因（可选）</label>
           <div className="check-grid review-tags">
-            {ERROR_TAG_OPTIONS.map((option) => <button type="button" className={cn('check-option', tags.includes(option.value) && 'active')} onClick={() => setTags((previous) => previous.includes(option.value) ? previous.filter((item) => item !== option.value) : [...previous, option.value])} disabled={busy || selectedIsConfirmed || rejecting} key={option.value}><span>{tags.includes(option.value) && <Check size={13} />}</span>{option.label}</button>)}
+            {ERROR_TAG_OPTIONS.map((option) => <button type="button" className={cn('check-option', tags.includes(option.value) && 'active')} onClick={() => { setTags((previous) => previous.includes(option.value) ? previous.filter((item) => item !== option.value) : [...previous, option.value]); markFormDirty() }} disabled={busy || selectedIsConfirmed || rejecting} key={option.value}><span>{tags.includes(option.value) && <Check size={13} />}</span>{option.label}</button>)}
           </div>
           {operationError && <p className="form-error" role="alert">{operationError}</p>}
         </div>}

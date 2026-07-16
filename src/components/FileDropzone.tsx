@@ -3,6 +3,9 @@ import { type ChangeEvent, type DragEvent, useRef, useState } from 'react'
 
 const ACCEPTED = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf']
 const FILE_ACCEPT = '.jpg,.jpeg,.png,.webp,.pdf,image/jpeg,image/png,image/webp,application/pdf'
+const MAX_FILES = 12
+const MAX_SINGLE_FILE_MB = 25
+const MAX_TOTAL_BYTES = 100 * 1024 * 1024
 
 function fileKey(file: File) {
   return `${file.name}-${file.size}-${file.lastModified}`
@@ -14,20 +17,41 @@ export function FileDropzone({ files, onChange, maxMb = 15 }: { files: File[]; o
   const [error, setError] = useState('')
 
   const addFiles = (incoming: File[]) => {
+    const empty = incoming.find((file) => file.size === 0)
+    if (empty) {
+      setError(`${empty.name} 是空文件，请重新选择`)
+      return
+    }
     const invalidType = incoming.find((file) => !ACCEPTED.includes(file.type))
     if (invalidType) {
       setError(`${invalidType.name} 的格式暂不支持`)
       return
     }
-    const oversized = incoming.find((file) => file.size > maxMb * 1024 * 1024)
+    const effectiveMaxMb = Math.min(maxMb, MAX_SINGLE_FILE_MB)
+    const oversized = incoming.find((file) => file.size > effectiveMaxMb * 1024 * 1024)
     if (oversized) {
-      setError(`${oversized.name} 超过 ${maxMb} MB`)
+      setError(`${oversized.name} 超过 ${effectiveMaxMb} MB`)
       return
     }
     const existing = new Set(files.map(fileKey))
-    const deduped = incoming.filter((file) => !existing.has(fileKey(file)))
-    onChange([...files, ...deduped].slice(0, 12))
-    setError(incoming.length + files.length > 12 ? '一次最多上传 12 个文件' : '')
+    const deduped = incoming.filter((file) => {
+      const key = fileKey(file)
+      if (existing.has(key)) return false
+      existing.add(key)
+      return true
+    })
+    const nextFiles = [...files, ...deduped]
+    if (nextFiles.length > MAX_FILES) {
+      setError(`一次最多上传 ${MAX_FILES} 个文件`)
+      return
+    }
+    const totalBytes = nextFiles.reduce((total, file) => total + file.size, 0)
+    if (totalBytes > MAX_TOTAL_BYTES) {
+      setError('本次文件总大小不能超过 100 MB')
+      return
+    }
+    onChange(nextFiles)
+    setError('')
   }
 
   const select = (event: ChangeEvent<HTMLInputElement>) => {
@@ -60,7 +84,7 @@ export function FileDropzone({ files, onChange, maxMb = 15 }: { files: File[]; o
       >
         <UploadCloud size={25} />
         <strong>拖入作业照片或 PDF</strong>
-        <span>JPG、PNG、WebP、PDF，单个不超过 {maxMb} MB</span>
+        <span>JPG、PNG、WebP、PDF，最多 12 个，单个不超过 {Math.min(maxMb, MAX_SINGLE_FILE_MB)} MB，总计不超过 100 MB</span>
         <button type="button" className="button small" onClick={() => inputRef.current?.click()}><Paperclip size={15} />选择文件</button>
         <input ref={inputRef} type="file" multiple accept={FILE_ACCEPT} onChange={select} hidden />
       </div>
@@ -74,7 +98,7 @@ export function FileDropzone({ files, onChange, maxMb = 15 }: { files: File[]; o
               <div className="file-actions">
                 <button type="button" className="icon-button" onClick={() => move(index, -1)} disabled={index === 0} title="上移"><ArrowUp size={16} /></button>
                 <button type="button" className="icon-button" onClick={() => move(index, 1)} disabled={index === files.length - 1} title="下移"><ArrowDown size={16} /></button>
-                <button type="button" className="icon-button danger-icon" onClick={() => onChange(files.filter((_, itemIndex) => itemIndex !== index))} title="移除"><Trash2 size={16} /></button>
+                <button type="button" className="icon-button danger-icon" onClick={() => { onChange(files.filter((_, itemIndex) => itemIndex !== index)); setError('') }} title="移除"><Trash2 size={16} /></button>
               </div>
             </li>
           ))}

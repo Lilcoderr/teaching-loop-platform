@@ -51,6 +51,15 @@ type SubmissionInput = Pick<
 type UploadProgressCallback = (completed: number, total: number) => void
 
 const MAX_CONCURRENT_UPLOADS = 4
+const MAX_SUBMISSION_FILES = 12
+const MAX_SUBMISSION_FILE_BYTES = 25 * 1024 * 1024
+const MAX_SUBMISSION_TOTAL_BYTES = 100 * 1024 * 1024
+const ACCEPTED_SUBMISSION_MIME_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'application/pdf',
+])
 
 function textLength(value: string) {
   return Array.from(value).length
@@ -372,6 +381,41 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
   }, [authenticated, refresh])
 
   useEffect(() => {
+    const realtimeClient = supabase
+    if (runtime.demoMode || !authenticated || !realtimeClient?.channel) return
+    let refreshTimer: number | undefined
+    const scheduleRefresh = () => {
+      if (document.visibilityState === 'hidden') return
+      if (refreshTimer !== undefined) window.clearTimeout(refreshTimer)
+      refreshTimer = window.setTimeout(() => void refresh(), 800)
+    }
+    const channel = realtimeClient.channel(`platform-live-${state.currentUser.id || 'pending'}`)
+    channel.on('postgres_changes', { event: '*', schema: 'public', table: 'submissions' }, (payload) => {
+      const next = payload.new as { status?: string; upload_finalized_at?: string | null } | undefined
+      if (next?.status === 'analyzing' && !next.upload_finalized_at) return
+      scheduleRefresh()
+    })
+    for (const table of [
+      'submission_grades',
+      'wrong_submission_feedback',
+      'messages',
+      'teacher_daily_evaluations',
+      'review_tasks',
+      'wrong_items',
+      'learning_materials',
+      'learning_material_grants',
+      'weekly_reports',
+    ]) {
+      channel.on('postgres_changes', { event: '*', schema: 'public', table }, scheduleRefresh)
+    }
+    channel.subscribe()
+    return () => {
+      if (refreshTimer !== undefined) window.clearTimeout(refreshTimer)
+      void realtimeClient.removeChannel(channel)
+    }
+  }, [authenticated, refresh, state.currentUser.id])
+
+  useEffect(() => {
     if (!runtime.demoMode) return
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ version: STORAGE_VERSION, state }))
   }, [state])
@@ -477,6 +521,19 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
     const submissionId = uniqueId('submission')
     const studentId = state.currentUser.role === 'student' ? state.currentUser.id : activeStudentId
     if (!studentId) throw new Error('未选择学生')
+    if (files.length < 1) throw new Error('请至少上传 1 个文件')
+    if (files.length > MAX_SUBMISSION_FILES) throw new Error(`一次最多上传 ${MAX_SUBMISSION_FILES} 个文件`)
+    const emptyFile = files.find((file) => file.size === 0)
+    if (emptyFile) throw new Error(`${emptyFile.name} 是空文件，请重新选择`)
+    const invalidType = files.find((file) => !ACCEPTED_SUBMISSION_MIME_TYPES.has(file.type))
+    if (invalidType) throw new Error(`${invalidType.name} 的格式暂不支持`)
+    const configuredFileLimit = Math.min(state.settings.maxUploadMb * 1024 * 1024, MAX_SUBMISSION_FILE_BYTES)
+    const oversizedFile = files.find((file) => file.size > configuredFileLimit)
+    if (oversizedFile) {
+      throw new Error(`${oversizedFile.name} 超过单文件 ${Math.floor(configuredFileLimit / 1024 / 1024)} MB 限制`)
+    }
+    const totalUploadBytes = files.reduce((total, file) => total + file.size, 0)
+    if (totalUploadBytes > MAX_SUBMISSION_TOTAL_BYTES) throw new Error('本次文件总大小不能超过 100 MB')
     if (input.wrongNumbers.length > 50) throw new Error('一次最多填写 50 个题号')
     if (input.wrongNumbers.some((value) => value.trim().length === 0 || Array.from(value.trim()).length > 40)) {
       throw new Error('单个题号必须为 1 到 40 个字符')
@@ -528,7 +585,8 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
         confidence: input.confidence,
         self_reflection: input.selfReflection,
         student_error_tags: input.studentErrorTags,
-        status: 'uploaded',
+        status: 'analyzing',
+        upload_finalized_at: null,
       })
       if (submissionError) throw submissionError
 
@@ -546,11 +604,12 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
         }> = []
         let nextUploadIndex = 0
         let completedUploads = 0
+        let uploadStopped = false
+        let firstUploadError: unknown
         const workers = Array.from(
           { length: Math.min(MAX_CONCURRENT_UPLOADS, files.length) },
           async () => {
-            const workerErrors: unknown[] = []
-            while (nextUploadIndex < files.length) {
+            while (!uploadStopped && nextUploadIndex < files.length) {
               const pageOrder = nextUploadIndex
               nextUploadIndex += 1
               const file = files[pageOrder]
@@ -572,20 +631,25 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
                   page_order: pageOrder,
                 }
               } catch (error) {
-                workerErrors.push(error)
+                uploadStopped = true
+                if (firstUploadError === undefined) firstUploadError = error
               } finally {
                 completedUploads += 1
                 onProgress?.(completedUploads, files.length)
               }
             }
-            return workerErrors
           },
         )
-        const uploadErrors = (await Promise.all(workers)).flat()
-        const failedUpload = uploadErrors.find((error) => error !== undefined)
-        if (failedUpload !== undefined) throw failedUpload
+        await Promise.all(workers)
+        if (uploadStopped) throw firstUploadError ?? new Error('附件上传失败')
         const { error: attachmentError } = await client.from('submission_attachments').insert(attachmentRows)
         if (attachmentError) throw attachmentError
+        const { error: finalizeError } = await client.rpc('finalize_submission_upload', {
+          target_submission_id: submissionId,
+          expected_attachment_count: files.length,
+          expected_total_bytes: totalUploadBytes,
+        })
+        if (finalizeError) throw finalizeError
       } catch (error) {
         if (uploadedPaths.length) {
           let storageCleanupError: unknown
@@ -602,7 +666,7 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
         }
         const cleanupFailures: string[] = []
         try {
-          const { error: deleteError } = await client.from('submissions').delete().eq('id', submissionId).eq('status', 'uploaded')
+          const { error: deleteError } = await client.from('submissions').delete().eq('id', submissionId).eq('status', 'analyzing')
           if (deleteError) cleanupFailures.push('提交记录清理失败')
         } catch {
           cleanupFailures.push('提交记录清理失败')
@@ -687,7 +751,7 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
       }))
     }
     return submissionId
-  }, [activeStudentId, refresh, state.currentUser, state.settings.aiEnabled])
+  }, [activeStudentId, refresh, state.currentUser, state.settings.aiEnabled, state.settings.maxUploadMb])
 
   const approveSubmission = useCallback(async (
     submissionId: string,
@@ -719,7 +783,17 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
           confirmedWrongNumbers: normalizedConfirmedWrongNumbers,
         })
       }
-      await refresh()
+      setState((previous) => ({
+        ...previous,
+        submissions: previous.submissions.map((item) => item.id === submissionId ? {
+          ...item,
+          status: item.mode === 'wrong_item' || normalizedConfirmedWrongNumbers.length ? 'scheduled' : 'approved',
+          teacherFeedback: teacherNote.trim() || item.teacherFeedback,
+          teacherHint: wrongItemHint.trim() || item.teacherHint,
+          teacherEvaluation: item.mode === 'wrong_item' ? teacherNote.trim() || item.teacherEvaluation : item.teacherEvaluation,
+        } : item),
+      }))
+      void refresh()
       return
     }
     setState((previous) => {
@@ -794,7 +868,8 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
       const hint = questionComments.map((item) => `第${item.questionNumber}题：${item.comment}`).join('\n')
       if (textLength(hint) > 4000) throw new Error('教师提示最多 4000 个字符')
     }
-    if (!runtime.demoMode) {
+    const productionMode = !runtime.demoMode
+    if (productionMode) {
       const submission = state.submissions.find((item) => item.id === submissionId)
       if (submission?.mode === 'wrong_item') {
         const hint = questionComments.map((item) => `第${item.questionNumber}题：${item.comment}`).join('\n')
@@ -807,8 +882,6 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
           score: score ?? null, maxScore: maxScore ?? null,
         })
       }
-      await refresh()
-      return
     }
     setState((previous) => {
       const hint = questionComments.map((item) => `第${item.questionNumber}题：${item.comment}`).join('\n')
@@ -839,6 +912,7 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
           : previous.wrongItems,
       }
     })
+    if (productionMode) void refresh()
   }, [refresh, state.submissions])
 
   const gradeAndApproveSubmission = useCallback(async (
@@ -872,7 +946,19 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
         score: score ?? null,
         maxScore: maxScore ?? null,
       })
-      await refresh()
+      setState((previous) => ({
+        ...previous,
+        submissions: previous.submissions.map((item) => item.id === submissionId ? {
+          ...item,
+          status: normalizedWrongNumbers.length ? 'scheduled' : 'approved',
+          teacherFeedback: note,
+          questionComments,
+          teacherScore: score,
+          maxScore,
+          gradedAt: new Date().toISOString(),
+        } : item),
+      }))
+      void refresh()
       return
     }
 
@@ -937,8 +1023,12 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
     subject?: Subject,
   ) => {
     if (!runtime.demoMode) {
-      await invokeFunction('teacher-content', { action: 'evaluation_upsert', studentId, date, subject, summary, highlights, improvements })
-      await refresh()
+      const result = await invokeFunction<{ evaluation: { id: string; created_at: string } }>('teacher-content', { action: 'evaluation_upsert', studentId, date, subject, summary, highlights, improvements })
+      setState((previous) => {
+        const current = previous.dailyEvaluations.find((item) => item.studentId === studentId && item.date === date && item.subject === subject)
+        const evaluation = { id: result.evaluation.id, studentId, date, subject, summary, highlights, improvements, createdAt: result.evaluation.created_at }
+        return { ...previous, dailyEvaluations: current ? previous.dailyEvaluations.map((item) => item.id === current.id ? evaluation : item) : [evaluation, ...previous.dailyEvaluations] }
+      })
       return
     }
     setState((previous) => {
@@ -946,7 +1036,7 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
       const evaluation = { id: current?.id ?? uniqueId('evaluation'), studentId, date, subject, summary, highlights, improvements, createdAt: new Date().toISOString() }
       return { ...previous, dailyEvaluations: current ? previous.dailyEvaluations.map((item) => item.id === current.id ? evaluation : item) : [evaluation, ...previous.dailyEvaluations] }
     })
-  }, [refresh])
+  }, [])
 
   const createLearningResource = useCallback(async (
     input: { studentIds: string[]; subject: Subject; topic: string; title: string; resourceType: LearningResourceType; description?: string; body?: string },
@@ -982,7 +1072,7 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
         if (fileError) throw fileError
       }
       await invokeFunction('teacher-content', { action: 'material_publish', materialId, studentIds: input.studentIds, published: true })
-      await refresh()
+      void refresh()
       return
     }
     const createdAt = new Date().toISOString()
@@ -1000,7 +1090,13 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
   const rejectSubmission = useCallback(async (submissionId: string, reason: string) => {
     if (!runtime.demoMode) {
       await invokeFunction('review-submission', { submissionId, action: 'reject', reason })
-      await refresh()
+      setState((previous) => ({
+        ...previous,
+        submissions: previous.submissions.map((item) =>
+          item.id === submissionId ? { ...item, status: 'rejected', failureReason: reason } : item,
+        ),
+      }))
+      void refresh()
       return
     }
     setState((previous) => ({
@@ -1012,10 +1108,9 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
   }, [refresh])
 
   const completeReview = useCallback(async (taskId: string, passed: boolean) => {
-    if (!runtime.demoMode) {
+    const productionMode = !runtime.demoMode
+    if (productionMode) {
       await invokeFunction('complete-review', { taskId, passed })
-      await refresh()
-      return
     }
     setState((previous) => {
       const task = previous.reviewTasks.find((item) => item.id === taskId)
@@ -1038,18 +1133,32 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
         ),
       }
     })
+    if (productionMode) void refresh()
   }, [refresh])
 
   const sendMessage = useCallback(async (studentId: string, body: string) => {
     if (!body.trim()) return
     if (!runtime.demoMode && supabase) {
-      const { error } = await supabase.from('messages').insert({
+      const { data, error } = await supabase.from('messages').insert({
         student_id: studentId,
         sender_role: state.currentUser.role,
         body: body.trim(),
-      })
-      if (error) throw error
-      await refresh()
+      }).select('id,student_id,sender_role,body,created_at,read').single()
+      if (error || !data) throw error ?? new Error('留言保存失败')
+      setState((previous) => ({
+        ...previous,
+        messages: previous.messages.some((message) => message.id === data.id) ? previous.messages : [
+          ...previous.messages,
+          {
+            id: data.id,
+            studentId: data.student_id,
+            senderRole: data.sender_role,
+            body: data.body,
+            createdAt: data.created_at,
+            read: data.read,
+          },
+        ],
+      }))
       return
     }
     setState((previous) => ({
@@ -1066,7 +1175,7 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
         },
       ],
     }))
-  }, [refresh, state.currentUser.role])
+  }, [state.currentUser.role])
 
   const markMessagesRead = useCallback(async (studentId: string) => {
     if (!runtime.demoMode && supabase) {
@@ -1188,7 +1297,12 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
   const saveReport = useCallback(async (report: WeeklyReport) => {
     if (!runtime.demoMode) {
       await invokeFunction('weekly-report', { action: 'save', report })
-      await refresh()
+      setState((previous) => ({
+        ...previous,
+        reports: previous.reports.some((item) => item.id === report.id)
+          ? previous.reports.map((item) => (item.id === report.id ? report : item))
+          : [report, ...previous.reports],
+      }))
       return
     }
     setState((previous) => ({
@@ -1197,7 +1311,7 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
         ? previous.reports.map((item) => (item.id === report.id ? report : item))
         : [report, ...previous.reports],
     }))
-  }, [refresh])
+  }, [])
 
   const generateReportDraft = useCallback(async (studentId: string): Promise<WeeklyReport> => {
     if (!runtime.demoMode) {
@@ -1228,7 +1342,12 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
   const publishReport = useCallback(async (reportId: string) => {
     if (!runtime.demoMode) {
       await invokeFunction('weekly-report', { action: 'publish', reportId })
-      await refresh()
+      setState((previous) => ({
+        ...previous,
+        reports: previous.reports.map((report) =>
+          report.id === reportId ? { ...report, status: 'published', publishedAt: new Date().toISOString() } : report,
+        ),
+      }))
       return
     }
     setState((previous) => ({
@@ -1237,16 +1356,16 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
         report.id === reportId ? { ...report, status: 'published', publishedAt: new Date().toISOString() } : report,
       ),
     }))
-  }, [refresh])
+  }, [])
 
   const updateSettings = useCallback(async (settings: PlatformState['settings']) => {
     if (!runtime.demoMode) {
       await invokeFunction('settings', settings)
-      await refresh()
+      setState((previous) => ({ ...previous, settings }))
       return
     }
     setState((previous) => ({ ...previous, settings }))
-  }, [refresh])
+  }, [])
 
   const createAccount = useCallback(async (
     account: NewAccountInput,

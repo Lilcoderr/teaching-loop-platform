@@ -183,6 +183,25 @@ describe('teacher assignment and verified-evidence boundaries', () => {
     expect(screen.getByText('来自 1 次提交、1 条已确认错题')).toBeInTheDocument()
   })
 
+  it('keeps analyzing submissions out of the review queue but allows manual review before AI claims an upload', () => {
+    setPlatform(platformState({
+      submissions: [
+        submission('assignment-analyzing', 'assignment', 'analyzing'),
+        submission('assignment-uploaded', 'assignment', 'uploaded'),
+        submission('assignment-needs-review', 'assignment', 'needs_review'),
+      ],
+    }))
+
+    render(<MemoryRouter><ReviewPage /></MemoryRouter>)
+
+    expect(screen.queryByText('assignment-analyzing')).not.toBeInTheDocument()
+    expect(screen.getAllByText('assignment-uploaded')).toHaveLength(2)
+    expect(screen.getByText('assignment-needs-review')).toBeInTheDocument()
+    expect(screen.getByText('AI 初批尚未启动，可以直接人工核对和批改。')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '确认批改并反馈' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '退回补交' })).toBeEnabled()
+  })
+
   it('rejects an oversized confirmed question number before saving any grade', async () => {
     const user = userEvent.setup()
     setPlatform(platformState({

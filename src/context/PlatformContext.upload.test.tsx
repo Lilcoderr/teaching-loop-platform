@@ -14,6 +14,7 @@ const serviceMocks = vi.hoisted(() => ({
   submissionDelete: vi.fn(),
   upload: vi.fn(),
   remove: vi.fn(),
+  finalizeUpload: vi.fn(),
 }))
 
 vi.mock('../lib/runtime', () => ({
@@ -43,6 +44,10 @@ vi.mock('../lib/supabase', () => ({
     },
     storage: {
       from: () => ({ upload: serviceMocks.upload, remove: serviceMocks.remove }),
+    },
+    rpc: (name: string, input: unknown) => {
+      if (name === 'finalize_submission_upload') return serviceMocks.finalizeUpload(input)
+      throw new Error(`Unexpected RPC: ${name}`)
     },
   },
 }))
@@ -109,6 +114,12 @@ async function renderReady(
   return view
 }
 
+function sizedFile(name: string, size: number, type = 'image/jpeg') {
+  const file = new File(['x'], name, { type })
+  Object.defineProperty(file, 'size', { configurable: true, value: size })
+  return file
+}
+
 describe('production submission attachment upload', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
@@ -133,6 +144,7 @@ describe('production submission attachment upload', () => {
     serviceMocks.submissionDelete.mockReset().mockResolvedValue({ error: null })
     serviceMocks.upload.mockReset().mockResolvedValue({ error: null })
     serviceMocks.remove.mockReset().mockResolvedValue({ error: null })
+    serviceMocks.finalizeUpload.mockReset().mockResolvedValue({ error: null })
     vi.spyOn(console, 'error').mockImplementation(() => undefined)
   })
 
@@ -146,10 +158,53 @@ describe('production submission attachment upload', () => {
     await waitFor(() => expect(screen.getByTestId('upload-result')).toHaveTextContent(/^ok:submission-/))
     expect(serviceMocks.upload).toHaveBeenCalledTimes(3)
     expect(serviceMocks.attachmentInsert).toHaveBeenCalledTimes(1)
+    expect(serviceMocks.submissionInsert).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'analyzing',
+      upload_finalized_at: null,
+    }))
     const rows = serviceMocks.attachmentInsert.mock.calls[0][0] as Array<{ file_name: string; page_order: number }>
     expect(rows.map((row) => [row.file_name, row.page_order])).toEqual([
       ['first.jpg', 0], ['second.jpg', 1], ['third.pdf', 2],
     ])
+    expect(serviceMocks.finalizeUpload).toHaveBeenCalledWith(expect.objectContaining({
+      expected_attachment_count: 3,
+      expected_total_bytes: 3,
+    }))
+  })
+
+  it.each([
+    {
+      name: 'empty file',
+      files: [new File([], 'empty.jpg', { type: 'image/jpeg' })],
+      message: 'empty.jpg 是空文件',
+    },
+    {
+      name: 'too many files',
+      files: Array.from({ length: 13 }, (_, index) => sizedFile(`page-${index}.jpg`, 1)),
+      message: '一次最多上传 12 个文件',
+    },
+    {
+      name: 'oversized single file',
+      files: [sizedFile('large.pdf', 16 * 1024 * 1024, 'application/pdf')],
+      message: 'large.pdf 超过单文件 15 MB 限制',
+    },
+    {
+      name: 'oversized total',
+      files: Array.from({ length: 11 }, (_, index) => sizedFile(`part-${index}.pdf`, 10 * 1024 * 1024, 'application/pdf')),
+      message: '本次文件总大小不能超过 100 MB',
+    },
+    {
+      name: 'unsupported type',
+      files: [sizedFile('notes.txt', 10, 'text/plain')],
+      message: 'notes.txt 的格式暂不支持',
+    },
+  ])('rejects $name before creating a production submission', async ({ files, message }) => {
+    await renderReady(files)
+
+    await waitFor(() => expect(screen.getByTestId('upload-result')).toHaveTextContent(message))
+    expect(serviceMocks.submissionInsert).not.toHaveBeenCalled()
+    expect(serviceMocks.upload).not.toHaveBeenCalled()
+    expect(serviceMocks.finalizeUpload).not.toHaveBeenCalled()
   })
 
   it('limits active uploads to four, preserves metadata order, and reports monotonic progress', async () => {
@@ -213,7 +268,35 @@ describe('production submission attachment upload', () => {
     expect(serviceMocks.attachmentInsert).not.toHaveBeenCalled()
     expect(serviceMocks.remove).toHaveBeenCalledTimes(1)
     expect(serviceMocks.remove.mock.calls[0][0]).toHaveLength(2)
-    expect(serviceMocks.submissionDelete).toHaveBeenCalledWith('status', 'uploaded')
+    expect(serviceMocks.submissionDelete).toHaveBeenCalledWith('status', 'analyzing')
+  })
+
+  it('does not let workers claim new files after the first upload failure is known', async () => {
+    const releases: Array<() => void> = []
+    serviceMocks.upload.mockImplementation((path: string) => {
+      if (path.includes('page-1.jpg')) return Promise.resolve({ error: new Error('first upload failed') })
+      return new Promise<{ error: null }>((resolve) => releases.push(() => resolve({ error: null })))
+    })
+    await renderReady(Array.from({ length: 8 }, (_, index) => (
+      new File(['x'], `page-${index + 1}.jpg`, { type: 'image/jpeg' })
+    )))
+
+    await waitFor(() => expect(serviceMocks.upload).toHaveBeenCalledTimes(4))
+    await act(async () => releases.forEach((release) => release()))
+    await waitFor(() => expect(screen.getByTestId('upload-result')).toHaveTextContent('first upload failed'))
+    expect(serviceMocks.upload).toHaveBeenCalledTimes(4)
+    expect(serviceMocks.attachmentInsert).not.toHaveBeenCalled()
+    expect(serviceMocks.finalizeUpload).not.toHaveBeenCalled()
+  })
+
+  it('rolls back storage and metadata when atomic upload finalization fails', async () => {
+    serviceMocks.finalizeUpload.mockResolvedValueOnce({ error: new Error('manifest mismatch') })
+    await renderReady([new File(['a'], 'first.jpg', { type: 'image/jpeg' })])
+
+    await waitFor(() => expect(screen.getByTestId('upload-result')).toHaveTextContent('manifest mismatch'))
+    expect(serviceMocks.attachmentInsert).toHaveBeenCalledTimes(1)
+    expect(serviceMocks.remove).toHaveBeenCalledTimes(1)
+    expect(serviceMocks.submissionDelete).toHaveBeenCalledWith('status', 'analyzing')
   })
 
   it('keeps the submission for tracing and skips deletion when storage rollback fails', async () => {
