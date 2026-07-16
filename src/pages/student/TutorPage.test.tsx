@@ -3,24 +3,44 @@ import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { TutorPage } from './TutorPage'
 
-const mocks = vi.hoisted(() => ({ sendTutorMessage: vi.fn() }))
+const mocks = vi.hoisted(() => ({
+  sendTutorMessage: vi.fn(),
+  demoMode: true,
+  settings: {
+    aiEnabled: true,
+    textModelConfigured: false,
+    visionModelConfigured: false,
+    embeddingModelConfigured: false,
+  },
+  guardianConsentAt: '2026-07-01T12:00:00.000Z',
+  tutorTurns: [] as unknown[],
+}))
 
 vi.mock('../../context/PlatformContext', () => ({
   usePlatform: () => ({
     state: {
       currentUser: { id: 'student-1', role: 'student', displayName: '林同学', username: 'lin-demo', avatarColor: '#000' },
-      students: [{ id: 'student-1', role: 'student', displayName: '林同学', username: 'lin-demo', avatarColor: '#000', grade: '高三', subjects: ['math'] }],
-      tutorTurns: [],
+      students: [{ id: 'student-1', role: 'student', displayName: '林同学', username: 'lin-demo', avatarColor: '#000', grade: '高三', subjects: ['math'], guardianConsentAt: mocks.guardianConsentAt }],
+      tutorTurns: mocks.tutorTurns,
       knowledgeDocuments: [],
       learningResources: [],
+      settings: mocks.settings,
     },
     sendTutorMessage: mocks.sendTutorMessage,
+    demoMode: mocks.demoMode,
   }),
 }))
 
 describe('TutorPage multimodal composer', () => {
   beforeEach(() => {
     mocks.sendTutorMessage.mockReset().mockResolvedValue(undefined)
+    mocks.demoMode = true
+    mocks.settings.aiEnabled = true
+    mocks.settings.textModelConfigured = false
+    mocks.settings.visionModelConfigured = false
+    mocks.settings.embeddingModelConfigured = false
+    mocks.guardianConsentAt = '2026-07-01T12:00:00.000Z'
+    mocks.tutorTurns = []
     Element.prototype.scrollIntoView = vi.fn()
     URL.createObjectURL = vi.fn(() => 'blob:question-preview')
     URL.revokeObjectURL = vi.fn()
@@ -75,5 +95,61 @@ describe('TutorPage multimodal composer', () => {
     expect(await screen.findByText('图片答疑暂未启用，请先输入题目文字，或联系老师开启视觉模型。')).toBeInTheDocument()
     expect(screen.getByAltText('待发送的题目')).toBeInTheDocument()
     expect(mocks.sendTutorMessage).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps text answering available but disables images when only the text model is connected', async () => {
+    mocks.demoMode = false
+    mocks.settings.textModelConfigured = true
+    mocks.settings.visionModelConfigured = false
+    const user = userEvent.setup()
+    render(<TutorPage />)
+
+    expect(screen.getByText('文字已连接 · 图片未连接')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '图片答疑未配置' })).toBeDisabled()
+    await user.type(screen.getByPlaceholderText('描述题目和你卡住的位置'), '这道数列题第一步怎么做？')
+    await user.click(screen.getByTitle('发送'))
+
+    await waitFor(() => expect(mocks.sendTutorMessage).toHaveBeenCalledTimes(1))
+  })
+
+  it('disables new questions when the text model is not connected in production', async () => {
+    mocks.demoMode = false
+    mocks.settings.textModelConfigured = false
+    const user = userEvent.setup()
+    render(<TutorPage />)
+
+    expect(screen.getByText('AI 文本模型未连接')).toBeInTheDocument()
+    await user.type(screen.getByPlaceholderText('描述题目和你卡住的位置'), '请帮我诊断卡点')
+    expect(screen.getByTitle('AI 答疑未连接')).toBeDisabled()
+    expect(mocks.sendTutorMessage).not.toHaveBeenCalled()
+  })
+
+  it('shows a single standardized fallback notice for a general-knowledge response', () => {
+    mocks.tutorTurns = [{
+      id: 'assistant-general',
+      studentId: 'student-1',
+      role: 'assistant',
+      body: '先使用通用知识梳理这道题。',
+      createdAt: new Date().toISOString(),
+      usedGeneralKnowledge: true,
+      citations: [],
+    }]
+    render(<TutorPage />)
+
+    expect(screen.getAllByText('未找到可靠匹配的已学资料，本次由 AI 使用通用学科知识回答。')).toHaveLength(1)
+  })
+
+  it('blocks AI use for a legacy student without a guardian-consent record', async () => {
+    mocks.demoMode = false
+    mocks.settings.textModelConfigured = true
+    mocks.settings.visionModelConfigured = true
+    mocks.guardianConsentAt = ''
+    const user = userEvent.setup()
+    render(<TutorPage />)
+
+    expect(screen.getByText('等待监护人知情记录')).toBeInTheDocument()
+    await user.type(screen.getByPlaceholderText('描述题目和你卡住的位置'), '请帮我分析这道题')
+    expect(screen.getByTitle('等待监护人知情记录')).toBeDisabled()
+    expect(mocks.sendTutorMessage).not.toHaveBeenCalled()
   })
 })

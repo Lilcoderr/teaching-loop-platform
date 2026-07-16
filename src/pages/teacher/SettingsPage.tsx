@@ -33,10 +33,10 @@ export function SettingsPage() {
           <div className="panel-header"><div><h2>AI 服务</h2><p>关闭后保留人工上传、复核与复习流程</p></div><Bot size={18} /></div>
           <div className="settings-list">
             <label className="setting-row"><div><strong>启用 AI 分析与答疑</strong><span>上传失败或模型不可用时自动转人工队列</span></div><input type="checkbox" checked={settings.aiEnabled} disabled={busy} onChange={(event) => { setSettings({ ...settings, aiEnabled: event.target.checked }); setSaved(false); setError('') }} /></label>
-            <ProviderRow icon={Sparkles} label="文本模型" value={settings.textProvider} enabled={settings.aiEnabled} />
-            <ProviderRow icon={ScanText} label="视觉模型" value={settings.visionProvider} enabled={settings.aiEnabled} />
-            <ProviderRow icon={Database} label="Embedding" value={settings.embeddingProvider} enabled={settings.aiEnabled} />
-            <div className="secret-notice"><KeyRound size={17} /><div><strong>API Key 不在网页中配置</strong><span>启用开关不代表密钥已经配置；通过 Supabase Functions Secrets 写入后，还需分别验证文本和图片调用。</span></div></div>
+            <ProviderRow icon={Sparkles} label="文本模型" provider={settings.textProvider} model={settings.textModel} enabled={settings.aiEnabled} configured={settings.textModelConfigured} demoMode={demoMode} />
+            <ProviderRow icon={ScanText} label="视觉模型" provider={settings.visionProvider} model={settings.visionModel} enabled={settings.aiEnabled} configured={settings.visionModelConfigured} demoMode={demoMode} />
+            <ProviderRow icon={Database} label="Embedding" provider={settings.embeddingProvider} model={settings.embeddingModel} enabled={settings.aiEnabled} configured={settings.embeddingModelConfigured} demoMode={demoMode} optional />
+            <div className="secret-notice"><KeyRound size={17} /><div><strong>API Key 不在网页中配置</strong><span>“已连接”表示服务端已检测到对应的地址、密钥和模型名；网页只显示模型状态，不会读取或返回密钥。</span></div></div>
           </div>
         </section>
         <section className="panel settings-section">
@@ -52,7 +52,37 @@ export function SettingsPage() {
   )
 }
 
-function ProviderRow({ icon: Icon, label, value, enabled }: { icon: typeof Bot; label: string; value: string; enabled: boolean }) {
-  const status = !enabled ? '未启用' : !value || value.startsWith('未配置') ? '待配置' : '待服务端验证'
-  return <div className="provider-row"><span><Icon size={17} /></span><div><strong>{label}</strong><small>{value || '未指定服务商'}</small></div><i>{status}</i></div>
+function ProviderRow({
+  icon: Icon,
+  label,
+  provider,
+  model,
+  enabled,
+  configured,
+  demoMode,
+  optional = false,
+}: {
+  icon: typeof Bot
+  label: string
+  provider: string
+  model: string
+  enabled: boolean
+  configured: boolean
+  demoMode: boolean
+  optional?: boolean
+}) {
+  const providerLabel = provider && !provider.startsWith('未配置') ? provider : ''
+  const modelLabel = model || (optional ? '关键词检索' : '未指定模型')
+  const detail = [modelLabel, providerLabel].filter(Boolean).join(' · ')
+  const status = demoMode
+    ? { label: '演示模式', tone: 'demo' }
+    : !enabled
+      ? { label: '未启用', tone: 'muted' }
+      : configured
+        ? { label: '已连接', tone: 'connected' }
+        : optional
+          ? { label: '未配置（关键词检索）', tone: 'fallback' }
+          : { label: '缺少服务端密钥', tone: 'missing' }
+
+  return <div className="provider-row"><span><Icon size={17} /></span><div><strong>{label}</strong><small>{detail}</small></div><i className={`provider-status ${status.tone}`}>{status.label}</i></div>
 }

@@ -158,7 +158,7 @@ Deno.serve(async (request) => {
     const [wrongItemResult, directDocumentResult, grantResult, materialGrantResult, historyResult] = baseRetrieval
     const retrievalQuery = [message, imageTranscriptionResult?.text].filter(Boolean).join('\n').slice(0, 10000)
       || '题目图片'
-    const embeddingResult = aiAllowed ? await embedTexts([retrievalQuery]) : null
+    const embeddingResult = aiAllowed ? await embedTexts([retrievalQuery], settings.embedding_model) : null
     const embedding = embeddingResult?.[0] ?? null
     const searches = await Promise.all(subjects.map((subject) => db.rpc('search_knowledge_chunks', {
       query_text: retrievalQuery,

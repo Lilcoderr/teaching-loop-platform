@@ -1,6 +1,12 @@
 import { handleOptions } from '../_shared/cors.ts'
 import { asErrorResponse, json } from '../_shared/http.ts'
 import { requireActor } from '../_shared/auth.ts'
+import {
+  chatModelConfigured,
+  embeddingModelConfigured,
+  selectedChatModel,
+  selectedEmbeddingModel,
+} from '../_shared/model.ts'
 
 const iso = (value: string | null | undefined) => value ?? undefined
 
@@ -18,7 +24,20 @@ Deno.serve(async (request) => {
         students: [], accounts: [], submissions: [], analysisDrafts: [], wrongItems: [], reviewTasks: [],
         messages: [], tutorTurns: [], reports: [], dailyEvaluations: [], submissionGrades: [], learningResources: [],
         knowledgeDocuments: [], questionBankItems: [], syncTokens: [], syncRuns: [],
-        settings: { aiEnabled: false, textProvider: '', visionProvider: '', embeddingProvider: '', dailyStudentMessageLimit: 0, maxUploadMb: 25 },
+        settings: {
+          aiEnabled: false,
+          textProvider: '',
+          visionProvider: '',
+          embeddingProvider: '',
+          textModel: '',
+          visionModel: '',
+          embeddingModel: '',
+          textModelConfigured: false,
+          visionModelConfigured: false,
+          embeddingModelConfigured: false,
+          dailyStudentMessageLimit: 0,
+          maxUploadMb: 25,
+        },
       })
     }
     const { data: allProfiles, error: profileError } = await db.from('profiles')
@@ -431,6 +450,12 @@ Deno.serve(async (request) => {
         textProvider: settingResult.data.text_provider,
         visionProvider: settingResult.data.vision_provider,
         embeddingProvider: settingResult.data.embedding_provider,
+        textModel: selectedChatModel('text', settingResult.data.text_model),
+        visionModel: selectedChatModel('vision', settingResult.data.vision_model),
+        embeddingModel: selectedEmbeddingModel(settingResult.data.embedding_model),
+        textModelConfigured: chatModelConfigured('text', settingResult.data.text_model),
+        visionModelConfigured: chatModelConfigured('vision', settingResult.data.vision_model),
+        embeddingModelConfigured: embeddingModelConfigured(settingResult.data.embedding_model),
         dailyStudentMessageLimit: settingResult.data.daily_student_message_limit,
         maxUploadMb: settingResult.data.max_upload_mb,
       },

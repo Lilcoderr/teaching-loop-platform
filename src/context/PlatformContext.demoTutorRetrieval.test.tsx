@@ -34,6 +34,7 @@ describe('demo tutor retrieval parity', () => {
     await user.click(screen.getByRole('button', { name: '无匹配资料' }))
     await waitFor(() => expect(screen.getByTestId('general-knowledge')).toHaveTextContent('true'))
     expect(screen.getByTestId('citation-count')).toHaveTextContent('0')
-    expect(screen.getByTestId('answer')).toHaveTextContent('本次未在已学资料中找到对应内容')
+    expect(screen.getByTestId('answer')).toHaveTextContent('先把题目中的已知量')
+    expect(screen.getByTestId('answer')).not.toHaveTextContent('本次未在已学资料中找到对应内容')
   })
 })

@@ -45,7 +45,20 @@ function state(submissions: Submission[], wrongItems: WrongItem[]): PlatformStat
     currentUser: { id: 'teacher-1', role: 'teacher', displayName: '陈老师', username: 'teacher', avatarColor: '#000' },
     students: [student], accounts: [], submissions, analysisDrafts: [], dailyEvaluations: [], wrongItems, reviewTasks: [],
     messages: [], tutorTurns: [], reports: [], knowledgeDocuments: [], learningResources: [], questionBankItems: [], syncTokens: [], syncRuns: [],
-    settings: { aiEnabled: false, textProvider: '', visionProvider: '', embeddingProvider: '', dailyStudentMessageLimit: 0, maxUploadMb: 25 },
+    settings: {
+      aiEnabled: false,
+      textProvider: '',
+      visionProvider: '',
+      embeddingProvider: '',
+      textModel: '',
+      visionModel: '',
+      embeddingModel: '',
+      textModelConfigured: false,
+      visionModelConfigured: false,
+      embeddingModelConfigured: false,
+      dailyStudentMessageLimit: 0,
+      maxUploadMb: 25,
+    },
   }
 }
 

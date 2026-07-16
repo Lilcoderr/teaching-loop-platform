@@ -63,7 +63,7 @@ Deno.serve(async (request) => {
       if (totalChunks > 1000 || totalCharacters > 2_000_000) {
         throw new HttpError(413, '单批最多 1000 个片段且总内容不超过 200 万字符', 'batch_too_large')
       }
-      const { data: settings } = await db.from('app_settings').select('ai_enabled').eq('singleton', true).single()
+      const { data: settings } = await db.from('app_settings').select('ai_enabled,embedding_model').eq('singleton', true).single()
       for (const raw of documents) {
         let externalId: string | undefined
         try {
@@ -133,7 +133,7 @@ Deno.serve(async (request) => {
           if (settings?.ai_enabled) {
             for (let start = 0; start < rawChunks.length; start += 32) {
               const batch = rawChunks.slice(start, start + 32).map((chunk) => requireString(chunk.content, 'chunk.content', 30000))
-              const vectors = await embedTexts(batch)
+              const vectors = await embedTexts(batch, settings.embedding_model)
               if (vectors) vectors.forEach((vector, offset) => { embeddings[start + offset] = vector })
             }
           }

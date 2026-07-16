@@ -95,9 +95,10 @@ function hasMeaningfulAttempt(value: string) {
 }
 
 export function TutorPage() {
-  const { state, sendTutorMessage } = usePlatform()
+  const { state, sendTutorMessage, demoMode } = usePlatform()
   const studentId = state.currentUser.id
-  const availableSubjects = state.students.find((student) => student.id === studentId)?.subjects ?? ['math']
+  const studentProfile = state.students.find((student) => student.id === studentId)
+  const availableSubjects = studentProfile?.subjects ?? ['math']
   const [message, setMessage] = useState('')
   const [attempt, setAttempt] = useState('')
   const [subject, setSubject] = useState<Subject>(availableSubjects[0] ?? 'math')
@@ -111,6 +112,20 @@ export function TutorPage() {
   const bottomRef = useRef<HTMLDivElement>(null)
   const imageInputRef = useRef<HTMLInputElement>(null)
   const turns = state.tutorTurns.filter((turn) => turn.studentId === studentId)
+  const consentReady = demoMode || Boolean(studentProfile?.guardianConsentAt)
+  const textModelReady = demoMode || Boolean(consentReady && state.settings.aiEnabled && state.settings.textModelConfigured)
+  const visionModelReady = demoMode || Boolean(textModelReady && state.settings.visionModelConfigured)
+  const modelStatus = demoMode
+    ? { label: '演示模式', tone: 'demo' }
+    : !consentReady
+      ? { label: '等待监护人知情记录', tone: 'missing' }
+      : !state.settings.aiEnabled
+        ? { label: 'AI 未启用', tone: 'missing' }
+        : !state.settings.textModelConfigured
+          ? { label: 'AI 文本模型未连接', tone: 'missing' }
+          : !state.settings.visionModelConfigured
+            ? { label: '文字已连接 · 图片未连接', tone: 'partial' }
+            : { label: '文字与图片已连接', tone: 'connected' }
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -145,6 +160,18 @@ export function TutorPage() {
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     if ((!message.trim() && !image) || busy) return
+    if (!consentReady) {
+      setError('尚未完成监护人知情记录，请联系老师。')
+      return
+    }
+    if (!textModelReady) {
+      setError('AI 答疑尚未连接，请联系老师完成模型配置。')
+      return
+    }
+    if (image && !visionModelReady) {
+      setError('图片答疑尚未连接视觉模型，请先输入题目文字。')
+      return
+    }
     if (level === 'solution' && !hasMeaningfulAttempt(attempt)) {
       setError('查看完整解答前，请写下至少 8 个字符且包含公式、设元或计算步骤。')
       return
@@ -173,6 +200,7 @@ export function TutorPage() {
       <section className="tutor-shell">
         <div className="tutor-context-bar">
           <span><BookOpen size={16} />已连接 {state.knowledgeDocuments.filter((document) => document.studentId === studentId && document.active).length + state.learningResources.filter((resource) => resource.studentId === studentId).length} 份个人资料</span>
+          <span className={`tutor-model-status ${modelStatus.tone}`}><Bot size={15} />{modelStatus.label}</span>
           <span className="privacy-note">仅检索你的资料</span>
         </div>
         <div className="chat-stream">
@@ -217,9 +245,9 @@ export function TutorPage() {
               if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit() }
             }} />
             <div className="tutor-composer-actions">
-              <button type="button" className="icon-button tutor-image-button" onClick={() => imageInputRef.current?.click()} disabled={busy} title={image ? '更换图片' : '上传题目图片'} aria-label={image ? '更换图片' : '上传题目图片'}><ImagePlus size={18} /></button>
-              <button type="submit" className="icon-button send-button" disabled={(!message.trim() && !image) || busy || (level === 'solution' && !hasMeaningfulAttempt(attempt))} title="发送"><Send size={18} /></button>
-              <input ref={imageInputRef} type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" onChange={chooseImage} hidden />
+              <button type="button" className="icon-button tutor-image-button" onClick={() => imageInputRef.current?.click()} disabled={busy || !visionModelReady} title={!visionModelReady ? '图片答疑未配置' : image ? '更换图片' : '上传题目图片'} aria-label={!visionModelReady ? '图片答疑未配置' : image ? '更换图片' : '上传题目图片'}><ImagePlus size={18} /></button>
+              <button type="submit" className="icon-button send-button" disabled={!textModelReady || (!message.trim() && !image) || busy || (level === 'solution' && !hasMeaningfulAttempt(attempt))} title={!consentReady ? '等待监护人知情记录' : !textModelReady ? 'AI 答疑未连接' : '发送'}><Send size={18} /></button>
+              <input ref={imageInputRef} type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" onChange={chooseImage} disabled={!visionModelReady} hidden />
             </div>
           </div>
           {error && <p className="form-error">{error}</p>}

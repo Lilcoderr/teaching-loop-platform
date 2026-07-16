@@ -925,6 +925,11 @@ p {
 .tutor-context-bar { min-height: 44px; padding: 0 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--border); background: var(--surface-muted); color: var(--ink-soft); font-size: 11px; }
 .tutor-context-bar span { display: flex; align-items: center; gap: 6px; }
 .privacy-note { color: var(--green); font-weight: 700; }
+.tutor-model-status { padding: 4px 7px; border-radius: 5px; font-weight: 800; }
+.tutor-model-status.connected { background: var(--green-soft); color: var(--green); }
+.tutor-model-status.partial,
+.tutor-model-status.demo { background: var(--amber-soft); color: #92400e; }
+.tutor-model-status.missing { background: #fee2e2; color: #b91c1c; }
 .chat-stream { min-height: 0; padding: 20px max(16px, calc((100% - 820px) / 2)); overflow-y: auto; scroll-behavior: smooth; }
 .chat-empty { min-height: 100%; display: grid; align-content: center; justify-items: center; text-align: center; }
 .chat-empty > span { width: 52px; height: 52px; display: grid; place-items: center; border-radius: 50%; background: var(--teal-soft); color: var(--teal); }
@@ -1398,7 +1403,12 @@ p {
 .provider-row > div { min-width: 0; display: flex; flex-direction: column; }
 .provider-row strong { font-size: 10px; }
 .provider-row small { margin-top: 3px; overflow: hidden; color: var(--ink-faint); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
-.provider-row i { color: var(--amber); font-size: 9px; font-style: normal; font-weight: 700; }
+.provider-row i { font-size: 9px; font-style: normal; font-weight: 700; }
+.provider-status.connected { color: var(--green); }
+.provider-status.missing { color: #b91c1c; }
+.provider-status.fallback,
+.provider-status.demo { color: #92400e; }
+.provider-status.muted { color: var(--ink-faint); }
 .secret-notice { margin: 13px; padding: 11px; display: flex; gap: 9px; border-radius: 6px; background: var(--amber-soft); color: #92400e; }
 .secret-notice strong { font-size: 10px; }
 .secret-notice span { margin-top: 3px; display: block; font-size: 9px; line-height: 1.5; }

@@ -22,11 +22,17 @@ function endpoint(path: string, kind: ModelKind): string | null {
   return base ? `${base}${path}` : null
 }
 
-function selectedChatModel(kind: ChatModelKind, requestedModel?: string): string {
+export function selectedChatModel(kind: ChatModelKind, requestedModel?: string): string {
   const configuredModel = kind === 'vision'
     ? Deno.env.get('AI_VISION_MODEL')?.trim()
     : Deno.env.get('AI_TEXT_MODEL')?.trim()
   return configuredModel || requestedModel?.trim() || (kind === 'text' ? 'deepseek-chat' : '')
+}
+
+export function selectedEmbeddingModel(requestedModel?: string): string {
+  return Deno.env.get('AI_EMBEDDING_MODEL')?.trim()
+    || requestedModel?.trim()
+    || 'text-embedding-3-small'
 }
 
 export function chatModelConfigured(kind: ChatModelKind, requestedModel?: string): boolean {
@@ -39,6 +45,14 @@ export function chatModelConfigured(kind: ChatModelKind, requestedModel?: string
 
 export function modelConfigured(): boolean {
   return chatModelConfigured('text')
+}
+
+export function embeddingModelConfigured(requestedModel?: string): boolean {
+  return Boolean(
+    endpoint('/embeddings', 'embedding')
+    && configuredValue('embedding', 'API_KEY')
+    && selectedEmbeddingModel(requestedModel),
+  )
 }
 
 export async function chatCompletion(
@@ -83,12 +97,12 @@ export async function chatCompletion(
   }
 }
 
-export async function embedTexts(texts: string[]): Promise<number[][] | null> {
+export async function embedTexts(texts: string[], requestedModel?: string): Promise<number[][] | null> {
   if (!texts.length) return []
   const url = endpoint('/embeddings', 'embedding')
   const key = configuredValue('embedding', 'API_KEY')
   if (!url || !key) return null
-  const model = Deno.env.get('AI_EMBEDDING_MODEL') || 'text-embedding-3-small'
+  const model = selectedEmbeddingModel(requestedModel)
   try {
     const response = await fetch(url, {
       method: 'POST',

@@ -263,6 +263,12 @@ export interface AppSettings {
   textProvider: string
   visionProvider: string
   embeddingProvider: string
+  textModel: string
+  visionModel: string
+  embeddingModel: string
+  textModelConfigured: boolean
+  visionModelConfigured: boolean
+  embeddingModelConfigured: boolean
   dailyStudentMessageLimit: number
   maxUploadMb: number
 }

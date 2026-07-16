@@ -150,7 +150,30 @@ function emptyPlatformState(): PlatformState {
     currentUser: { id: '', role: 'student', displayName: '', username: '', avatarColor: '#64748b' },
     students: [], accounts: [], submissions: [], analysisDrafts: [], dailyEvaluations: [], wrongItems: [], reviewTasks: [],
     messages: [], tutorTurns: [], reports: [], knowledgeDocuments: [], learningResources: [], questionBankItems: [], syncTokens: [], syncRuns: [],
-    settings: { aiEnabled: false, textProvider: '', visionProvider: '', embeddingProvider: '', dailyStudentMessageLimit: 0, maxUploadMb: 25 },
+    settings: {
+      aiEnabled: false,
+      textProvider: '',
+      visionProvider: '',
+      embeddingProvider: '',
+      textModel: '',
+      visionModel: '',
+      embeddingModel: '',
+      textModelConfigured: false,
+      visionModelConfigured: false,
+      embeddingModelConfigured: false,
+      dailyStudentMessageLimit: 0,
+      maxUploadMb: 25,
+    },
+  }
+}
+
+function withSettingsDefaults(state: PlatformState, defaults: PlatformState['settings']): PlatformState {
+  return {
+    ...state,
+    settings: {
+      ...defaults,
+      ...state.settings,
+    },
   }
 }
 
@@ -159,7 +182,9 @@ function loadDemoState() {
     const saved = localStorage.getItem(STORAGE_KEY)
     if (saved) {
       const parsed = JSON.parse(saved) as { version?: number; state?: PlatformState }
-      if (parsed.version === STORAGE_VERSION && parsed.state) return parsed.state
+      if (parsed.version === STORAGE_VERSION && parsed.state) {
+        return withSettingsDefaults(parsed.state, demoState.settings)
+      }
     }
   } catch {
     // A broken browser cache should never prevent the demo from opening.
@@ -215,7 +240,10 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
       setLoading(true)
     }
     try {
-      const next = await invokeFunction<PlatformState>('bootstrap')
+      const next = withSettingsDefaults(
+        await invokeFunction<PlatformState>('bootstrap'),
+        emptyPlatformState().settings,
+      )
       if (requestEpoch === authEpoch.current && requestId === latestRefreshRequest.current) {
         setState(next)
         revokeOptimisticAttachmentUrls()
@@ -1143,9 +1171,6 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
       responseBody = attempt?.trim()
         ? '根据你的尝试，完整处理顺序应是：① 写出对象的标准方程；② 设直线并联立；③ 用判别式保证相交；④ 用韦达关系代替直接求根；⑤ 回到题目目标量并检查取值范围。你原来的第二步是对的，主要遗漏在第③步。'
         : '完整解答需要先看到你的尝试。请至少提交一个公式、一个设元或你卡住的具体步骤，我再继续。'
-    }
-    if (citations.length === 0) {
-      responseBody += '\n\n本次未在已学资料中找到对应内容，我先使用通用学科知识回答。'
     }
     const assistantTurn: TutorTurn = {
       id: uniqueId('turn'),
