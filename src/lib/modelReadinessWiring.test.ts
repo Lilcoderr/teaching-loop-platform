@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 
 const bootstrap = readFileSync('supabase/functions/bootstrap/index.ts', 'utf8')
 const modelAdapter = readFileSync('supabase/functions/_shared/model.ts', 'utf8')
+const knowledgeIngest = readFileSync('supabase/functions/knowledge-ingest/index.ts', 'utf8')
 
 describe('server-side model readiness wiring', () => {
   it('returns effective model names and readiness booleans without returning secret values', () => {
@@ -23,5 +24,12 @@ describe('server-side model readiness wiring', () => {
     expect(modelAdapter).toContain('selectedChatModel(kind, requestedModel)')
     expect(modelAdapter).toContain("endpoint('/embeddings', 'embedding')")
     expect(modelAdapter).toContain("configuredValue('embedding', 'API_KEY')")
+  })
+
+  it('backfills missing vectors when unchanged documents are synchronized after embedding setup', () => {
+    expect(knowledgeIngest).toContain('backfillMissingEmbeddings')
+    expect(knowledgeIngest).toContain(".is('embedding', null)")
+    expect(knowledgeIngest).toContain('embeddingModelConfigured(settings?.embedding_model)')
+    expect(knowledgeIngest).not.toContain('if (settings?.ai_enabled)')
   })
 })

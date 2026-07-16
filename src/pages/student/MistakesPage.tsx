@@ -24,12 +24,14 @@ export function MistakesPage() {
   const [selected, setSelected] = useState<WrongItem | null>(null)
   const [reviewAction, setReviewAction] = useState<{ taskId: string; passed: boolean } | null>(null)
   const [reviewError, setReviewError] = useState('')
+  const [visibleCount, setVisibleCount] = useState(30)
   const studentId = state.currentUser.id
   const items = useMemo(() => state.wrongItems.filter((item) =>
     item.studentId === studentId &&
     (subject === 'all' || item.subject === subject) &&
     (status === 'resolved' ? item.resolved : !item.resolved),
   ), [state.wrongItems, status, studentId, subject])
+  const visibleItems = items.slice(0, visibleCount)
 
   const reviewFor = (wrongItemId: string) => state.reviewTasks.find((task) =>
     task.wrongItemId === wrongItemId && task.status === 'due' && new Date(task.dueAt).getTime() <= Date.now(),
@@ -57,10 +59,10 @@ export function MistakesPage() {
       <PageHeader title="我的错题" description="主动上传后立即保存；老师确认后会补充错因、建议和复习计划。" />
       <div className="filter-bar">
         <div className="segmented-control">
-          <button type="button" className={status === 'open' ? 'active' : ''} onClick={() => setStatus('open')}>待巩固</button>
-          <button type="button" className={status === 'resolved' ? 'active' : ''} onClick={() => setStatus('resolved')}>已稳定</button>
+          <button type="button" className={status === 'open' ? 'active' : ''} onClick={() => { setStatus('open'); setVisibleCount(30) }}>待巩固</button>
+          <button type="button" className={status === 'resolved' ? 'active' : ''} onClick={() => { setStatus('resolved'); setVisibleCount(30) }}>已稳定</button>
         </div>
-        <select className="compact-select" value={subject} onChange={(event) => setSubject(event.target.value as 'all' | Subject)}>
+        <select className="compact-select" value={subject} onChange={(event) => { setSubject(event.target.value as 'all' | Subject); setVisibleCount(30) }}>
           <option value="all">全部科目</option>
           <option value="math">数学</option>
           <option value="physics">物理</option>
@@ -71,7 +73,7 @@ export function MistakesPage() {
 
       {items.length ? (
         <div className="mistake-grid">
-          {items.map((item) => {
+          {visibleItems.map((item) => {
             const review = reviewFor(item.id)
             const sourceSubmission = item.submissionId
               ? state.submissions.find((submission) => submission.id === item.submissionId)
@@ -99,6 +101,11 @@ export function MistakesPage() {
               </article>
             )
           })}
+          {items.length > visibleItems.length && (
+            <button type="button" className="button" onClick={() => setVisibleCount((count) => count + 30)}>
+              加载更多错题
+            </button>
+          )}
         </div>
       ) : <section className="panel"><EmptyState icon={NotebookTabs} title={status === 'open' ? '当前没有待巩固错题' : '还没有稳定掌握的错题'} detail="从“上传错题 / 不会题”提交后会立即保存在这里。" /></section>}
 

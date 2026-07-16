@@ -165,6 +165,9 @@ function SubmissionUploadPage({ mode }: { mode: UploadMode }) {
 }
 
 function SubmissionHistory({ mode, submissions }: { mode: UploadMode; submissions: Submission[] }) {
+  const [visibleCount, setVisibleCount] = useState(20)
+  const visibleSubmissions = submissions.slice(0, visibleCount)
+
   return (
     <section className="panel submission-history">
       <div className="panel-header">
@@ -176,7 +179,12 @@ function SubmissionHistory({ mode, submissions }: { mode: UploadMode; submission
       </div>
       {submissions.length ? (
         <div className="submission-history-list">
-          {submissions.map((submission) => <SubmissionHistoryItem submission={submission} key={submission.id} />)}
+          {visibleSubmissions.map((submission) => <SubmissionHistoryItem submission={submission} key={submission.id} />)}
+          {submissions.length > visibleSubmissions.length && (
+            <button type="button" className="button" onClick={() => setVisibleCount((count) => count + 20)}>
+              加载更多记录
+            </button>
+          )}
         </div>
       ) : <p className="submission-history-empty">还没有{mode === 'assignment' ? '作业' : '题目'}上传记录。</p>}
     </section>

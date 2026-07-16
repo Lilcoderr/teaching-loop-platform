@@ -7,12 +7,14 @@ import { formatDateTime } from '../../lib/utils'
 
 export function MessagesPage() {
   const { state, sendMessage } = usePlatform()
+  const [visibleCount, setVisibleCount] = useState(50)
   const [body, setBody] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const bottomRef = useRef<HTMLDivElement>(null)
   const studentId = state.currentUser.id
   const messages = state.messages.filter((message) => message.studentId === studentId)
+  const visibleMessages = messages.slice(-visibleCount)
   useEffect(() => bottomRef.current?.scrollIntoView(), [messages.length])
 
   const submit = async (event: FormEvent) => {
@@ -36,7 +38,12 @@ export function MessagesPage() {
       <section className="message-panel panel">
         <div className="message-stream">
           {!messages.length && <EmptyState icon={MessageSquare} title="还没有留言" detail="发出第一条问题后，老师会在这里回复。" />}
-          {messages.map((message) => (
+          {messages.length > visibleMessages.length && (
+            <button type="button" className="button small" onClick={() => setVisibleCount((count) => count + 50)}>
+              加载更早留言
+            </button>
+          )}
+          {visibleMessages.map((message) => (
             <div className={`message-row ${message.senderRole}`} key={message.id}>
               <div><p>{message.body}</p><span>{message.senderRole === 'teacher' ? '老师' : '我'} · {formatDateTime(message.createdAt)}</span></div>
             </div>

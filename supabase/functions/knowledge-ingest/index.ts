@@ -1,12 +1,37 @@
 import { handleOptions } from '../_shared/cors.ts'
 import { requireSyncToken } from '../_shared/auth.ts'
 import { asErrorResponse, HttpError, json, readJson, requireString } from '../_shared/http.ts'
-import { embedTexts } from '../_shared/model.ts'
+import { embeddingModelConfigured, embedTexts } from '../_shared/model.ts'
 
 const SUBJECTS = new Set(['math', 'physics', 'chemistry'])
 const TYPES = new Set(['lecture', 'exercise', 'solution', 'lesson_plan'])
 const VISIBILITIES = new Set(['student_visible', 'solution_gated', 'teacher_only'])
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+async function backfillMissingEmbeddings(
+  db: ReturnType<typeof import('../_shared/auth.ts')['serviceClient']>,
+  versionId: string,
+  requestedModel?: string,
+): Promise<void> {
+  if (!embeddingModelConfigured(requestedModel)) return
+  const { data: chunks, error } = await db.from('knowledge_chunks')
+    .select('id,content')
+    .eq('version_id', versionId)
+    .is('embedding', null)
+    .order('ordinal')
+    .limit(250)
+  if (error) throw error
+  for (let start = 0; start < (chunks ?? []).length; start += 32) {
+    const batch = (chunks ?? []).slice(start, start + 32)
+    const vectors = await embedTexts(batch.map((chunk) => chunk.content), requestedModel)
+    if (!vectors) return
+    const updates = await Promise.all(batch.map((chunk, offset) =>
+      db.from('knowledge_chunks').update({ embedding: vectors[offset] }).eq('id', chunk.id)
+    ))
+    const updateError = updates.find((result) => result.error)?.error
+    if (updateError) throw updateError
+  }
+}
 
 async function resolveStudent(db: ReturnType<typeof import('../_shared/auth.ts')['serviceClient']>, value: unknown): Promise<string> {
   const candidate = requireString(value, 'studentId', 80)
@@ -80,6 +105,7 @@ Deno.serve(async (request) => {
             throw new HttpError(403, '同步令牌无权修改已有文档', 'sync_scope_forbidden')
           }
           if (existing && existing.content_hash === contentHash && existing.active_version_id) {
+            await backfillMissingEmbeddings(db, existing.active_version_id, settings?.embedding_model)
             const { error } = await db.from('knowledge_documents').update({
               student_id: studentId,
               subject: doc.subject,
@@ -130,7 +156,7 @@ Deno.serve(async (request) => {
 
           const rawChunks = doc.chunks as Array<Record<string, unknown>>
           const embeddings: Array<number[] | null> = Array(rawChunks.length).fill(null)
-          if (settings?.ai_enabled) {
+          if (embeddingModelConfigured(settings?.embedding_model)) {
             for (let start = 0; start < rawChunks.length; start += 32) {
               const batch = rawChunks.slice(start, start + 32).map((chunk) => requireString(chunk.content, 'chunk.content', 30000))
               const vectors = await embedTexts(batch, settings.embedding_model)

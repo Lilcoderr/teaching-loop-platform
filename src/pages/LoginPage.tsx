@@ -1,5 +1,5 @@
 import { ArrowRight, Eye, EyeOff, GraduationCap, LoaderCircle, LockKeyhole, NotebookTabs, ShieldCheck, UserRound, Users } from 'lucide-react'
-import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Brand } from '../components/Brand'
 import { usePlatform } from '../context/PlatformContext'
@@ -11,6 +11,22 @@ interface LoginAccount {
   role: Role
   label: string
   loginIdentifier: string
+}
+
+const ACCOUNT_CACHE_KEY = 'teaching-loop-login-accounts-v1'
+const ACCOUNT_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000
+
+function readCachedAccounts(): LoginAccount[] {
+  try {
+    const cached = JSON.parse(sessionStorage.getItem(ACCOUNT_CACHE_KEY) ?? 'null') as { savedAt?: number; accounts?: LoginAccount[] } | null
+    if (!cached?.savedAt || Date.now() - cached.savedAt > ACCOUNT_CACHE_MAX_AGE_MS || !Array.isArray(cached.accounts)) return []
+    return cached.accounts.filter((account) =>
+      typeof account.id === 'string' && typeof account.label === 'string' && typeof account.loginIdentifier === 'string'
+      && ['teacher', 'student', 'parent'].includes(account.role),
+    )
+  } catch {
+    return []
+  }
 }
 
 const roleOptions = [
@@ -31,17 +47,18 @@ export function LoginPage() {
   const { state, signIn, demoMode, switchDemoUser } = usePlatform()
   const navigate = useNavigate()
   const [role, setRole] = useState<Role>('teacher')
-  const [accounts, setAccounts] = useState<LoginAccount[]>([])
+  const [accounts, setAccounts] = useState<LoginAccount[]>(() => demoMode ? [] : readCachedAccounts())
   const [selectedAccountId, setSelectedAccountId] = useState('')
-  const [accountsBusy, setAccountsBusy] = useState(true)
+  const [accountsBusy, setAccountsBusy] = useState(() => demoMode || !readCachedAccounts().length)
   const [accountsError, setAccountsError] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const hasAccountDirectory = useRef(accounts.length > 0)
 
   const loadAccounts = useCallback(async () => {
-    setAccountsBusy(true)
+    if (!hasAccountDirectory.current) setAccountsBusy(true)
     setAccountsError('')
     try {
       if (demoMode) {
@@ -54,7 +71,10 @@ export function LoginPage() {
         return
       }
       const result = await invokeFunction<{ accounts: Array<Omit<LoginAccount, 'loginIdentifier'>> }>('username-login', { action: 'list_accounts' })
-      setAccounts(result.accounts.map((account) => ({ ...account, loginIdentifier: account.id })))
+      const nextAccounts = result.accounts.map((account) => ({ ...account, loginIdentifier: account.id }))
+      setAccounts(nextAccounts)
+      hasAccountDirectory.current = true
+      sessionStorage.setItem(ACCOUNT_CACHE_KEY, JSON.stringify({ savedAt: Date.now(), accounts: nextAccounts }))
     } catch {
       setAccountsError('暂时无法读取账号，请检查网络后重试')
     } finally {

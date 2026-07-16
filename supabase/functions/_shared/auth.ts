@@ -44,10 +44,13 @@ export async function requireActor(
   const { data: authData, error: authError } = await db.auth.getUser(token)
   if (authError || !authData.user) throw new HttpError(401, '登录状态已失效', 'unauthorized')
   const { data: profile, error } = await db.from('profiles')
-    .select('id,username,display_name,role,status,must_change_password')
+    .select('id,username,display_name,role,status,must_change_password,last_active_at')
     .eq('id', authData.user.id).maybeSingle()
   if (error || !profile || profile.status !== 'active') throw new HttpError(403, '账号不存在或已停用', 'account_disabled')
-  await db.from('profiles').update({ last_active_at: new Date().toISOString() }).eq('id', profile.id)
+  const lastActiveAt = profile.last_active_at ? new Date(profile.last_active_at).getTime() : 0
+  if (!Number.isFinite(lastActiveAt) || Date.now() - lastActiveAt >= 10 * 60 * 1000) {
+    await db.from('profiles').update({ last_active_at: new Date().toISOString() }).eq('id', profile.id)
+  }
   const result = {
     db,
     token,

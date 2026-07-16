@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
 const loginFunction = readFileSync('supabase/functions/username-login/index.ts', 'utf8')
+const loginPage = readFileSync('src/pages/LoginPage.tsx', 'utf8')
 
 describe('username login critical path', () => {
   it('runs rate-limit checks, stale-log cleanup, and profile lookup in one parallel batch', () => {
@@ -23,5 +24,12 @@ describe('username login critical path', () => {
     expect(loginFunction).toContain('if (rateLimitError) throw rateLimitError')
     expect(loginFunction.indexOf('if (rateLimitError) throw rateLimitError'))
       .toBeLessThan(loginFunction.indexOf("publicClient().auth.signInWithPassword"))
+  })
+
+  it('restores the account directory immediately and refreshes it in the background', () => {
+    expect(loginPage).toContain("const ACCOUNT_CACHE_KEY = 'teaching-loop-login-accounts-v1'")
+    expect(loginPage).toContain('readCachedAccounts()')
+    expect(loginPage).toContain('sessionStorage.setItem(ACCOUNT_CACHE_KEY')
+    expect(loginPage).toContain('if (!hasAccountDirectory.current) setAccountsBusy(true)')
   })
 })
