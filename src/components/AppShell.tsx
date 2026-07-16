@@ -63,6 +63,8 @@ export function AppShell() {
   const items = navByRole[role]
   const [passwordOpen, setPasswordOpen] = useState(false)
   const [syncRetrying, setSyncRetrying] = useState(false)
+  const [pwaUpdate, setPwaUpdate] = useState<null | (() => Promise<void>)>(null)
+  const [pwaUpdating, setPwaUpdating] = useState(false)
   const mobileNavRef = useRef<HTMLElement>(null)
 
   useEffect(() => {
@@ -70,6 +72,25 @@ export function AppShell() {
     if (!nav || typeof window.matchMedia !== 'function') return
     revealActiveMobileNav(nav, window.matchMedia('(max-width: 760px)').matches)
   }, [location.pathname, role])
+
+  useEffect(() => {
+    const onUpdateAvailable = (event: Event) => {
+      const applyUpdate = (event as CustomEvent<{ applyUpdate?: () => Promise<void> }>).detail?.applyUpdate
+      if (applyUpdate) setPwaUpdate(() => applyUpdate)
+    }
+    window.addEventListener('teaching-loop:pwa-update-available', onUpdateAvailable)
+    return () => window.removeEventListener('teaching-loop:pwa-update-available', onUpdateAvailable)
+  }, [])
+
+  const applyPwaUpdate = async () => {
+    if (!pwaUpdate || pwaUpdating) return
+    setPwaUpdating(true)
+    try {
+      await pwaUpdate()
+    } finally {
+      setPwaUpdating(false)
+    }
+  }
 
   const retrySync = async () => {
     if (syncRetrying) return
@@ -127,6 +148,7 @@ export function AppShell() {
             <button type="button" className="icon-button mobile-signout" onClick={() => void signOut()} title="退出登录" aria-label="退出登录"><LogOut size={18} /></button>
           </div>
         </header>
+        {pwaUpdate && <div className="sync-error-banner pwa-update-banner" role="status"><RefreshCw size={18} /><span>新版本已准备好</span><button type="button" onClick={() => void applyPwaUpdate()} disabled={pwaUpdating}><RefreshCw className={pwaUpdating ? 'spin' : undefined} size={16} />{pwaUpdating ? '正在刷新' : '刷新应用'}</button></div>}
         {syncError && initialDataReady && <div className="sync-error-banner" role="alert"><AlertTriangle size={18} /><span>{syncError}</span><button type="button" onClick={() => void retrySync()} disabled={syncRetrying}><RefreshCw className={syncRetrying ? 'spin' : undefined} size={16} />重试</button></div>}
         <main key={location.pathname} className="main-content">
           {initialSyncPending

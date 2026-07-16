@@ -38,7 +38,7 @@ export default defineConfig(({ mode }) => {
     plugins: [
       react(),
       VitePWA({
-        registerType: 'autoUpdate',
+        registerType: 'prompt',
         includeAssets: ['app-icon.svg'],
         manifest: {
           name: '知行学伴',

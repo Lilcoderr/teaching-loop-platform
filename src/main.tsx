@@ -13,7 +13,41 @@ const activeTheme = requestedTheme && uiThemes.has(requestedTheme)
   : 'data'
 document.documentElement.dataset.uiTheme = activeTheme
 
-registerSW({ immediate: true })
+const PWA_UPDATE_AVAILABLE_EVENT = 'teaching-loop:pwa-update-available'
+
+type PwaUpdateAvailableDetail = {
+  applyUpdate: () => Promise<void>
+}
+
+function scheduleServiceWorkerRegistration() {
+  if (!('serviceWorker' in navigator)) return
+
+  const register = () => {
+    const updateServiceWorker = registerSW({
+      immediate: false,
+      onNeedRefresh: () => {
+        const detail: PwaUpdateAvailableDetail = {
+          applyUpdate: () => updateServiceWorker(true),
+        }
+        window.dispatchEvent(new CustomEvent<PwaUpdateAvailableDetail>(PWA_UPDATE_AVAILABLE_EVENT, { detail }))
+      },
+    })
+  }
+
+  const scheduleWhenIdle = () => {
+    const idleWindow = window as Window & { requestIdleCallback?: typeof window.requestIdleCallback }
+    if (typeof idleWindow.requestIdleCallback === 'function') {
+      idleWindow.requestIdleCallback(register, { timeout: 4_000 })
+      return
+    }
+    window.setTimeout(register, 1_500)
+  }
+
+  if (document.readyState === 'complete') scheduleWhenIdle()
+  else window.addEventListener('load', scheduleWhenIdle, { once: true })
+}
+
+scheduleServiceWorkerRegistration()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

@@ -4,6 +4,24 @@ import { describe, expect, it } from 'vitest'
 import { AttachmentGallery } from './AttachmentGallery'
 
 describe('AttachmentGallery', () => {
+  it('defers gallery images and only mounts a lightbox image after a click', async () => {
+    const user = userEvent.setup()
+    render(<AttachmentGallery title="函数作业" attachments={[
+      { id: 'a', name: '第一页.jpg', mimeType: 'image/jpeg', size: 100, previewUrl: 'https://example.test/a.jpg' },
+    ]} />)
+
+    const preview = screen.getByRole('img', { name: '函数作业 第 1 页' })
+    expect(preview).toHaveAttribute('loading', 'lazy')
+    expect(preview).toHaveAttribute('decoding', 'async')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.getAllByRole('img')).toHaveLength(1)
+
+    await user.click(screen.getByRole('button', { name: '放大查看 第一页.jpg' }))
+
+    expect(screen.getByRole('dialog', { name: '第一页.jpg' })).toBeInTheDocument()
+    expect(screen.getAllByRole('img')).toHaveLength(2)
+  })
+
   it('opens images inside the page, supports paging, and closes with Escape', async () => {
     const user = userEvent.setup()
     render(<AttachmentGallery title="函数作业" attachments={[

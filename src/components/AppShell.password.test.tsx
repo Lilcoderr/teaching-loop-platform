@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../App'
 import { PlatformProvider } from '../context/PlatformContext'
 
@@ -50,5 +50,22 @@ describe('password settings', () => {
     fireEvent.change(confirmation, { target: { value: 'new-password-2026' } })
     await user.click(submit)
     expect(await within(dialog).findByText('密码已修改，请在下次登录时使用新密码')).toBeInTheDocument()
+  })
+
+  it('only applies a prepared PWA update after the user confirms it', async () => {
+    const user = userEvent.setup()
+    const applyUpdate = vi.fn().mockResolvedValue(undefined)
+    render(
+      <MemoryRouter initialEntries={['/teacher']}>
+        <PlatformProvider><App /></PlatformProvider>
+      </MemoryRouter>,
+    )
+
+    await screen.findByLabelText('演示视角')
+    fireEvent(window, new CustomEvent('teaching-loop:pwa-update-available', { detail: { applyUpdate } }))
+
+    expect(applyUpdate).not.toHaveBeenCalled()
+    await user.click(await screen.findByRole('button', { name: '刷新应用' }))
+    expect(applyUpdate).toHaveBeenCalledOnce()
   })
 })

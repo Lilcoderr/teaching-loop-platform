@@ -38,7 +38,12 @@ export function AttachmentGallery({ attachments, title }: { attachments: Attachm
                     title="放大图片"
                     aria-label={`放大查看 ${file.name}`}
                   >
-                    <img src={file.previewUrl} alt={`${title} 第 ${index + 1} 页`} />
+                    <img
+                      src={file.previewUrl}
+                      alt={`${title} 第 ${index + 1} 页`}
+                      loading="lazy"
+                      decoding="async"
+                    />
                     <span><Maximize2 size={16} /></span>
                   </button>
                 )
@@ -61,7 +66,7 @@ export function AttachmentGallery({ attachments, title }: { attachments: Attachm
                 <button className="icon-button" type="button" onClick={() => setActiveIndex(null)} title="关闭" aria-label="关闭图片"><X size={20} /></button>
               </div>
             </header>
-            <div className="image-lightbox-body"><img src={active.previewUrl} alt={active.name} /></div>
+            <div className="image-lightbox-body"><img src={active.previewUrl} alt={active.name} decoding="async" /></div>
             {images.length > 1 && (
               <footer>
                 <button className="icon-button" type="button" onClick={() => setActiveIndex((current) => current === null ? null : (current - 1 + images.length) % images.length)} title="上一页" aria-label="上一页"><ChevronLeft size={22} /></button>
