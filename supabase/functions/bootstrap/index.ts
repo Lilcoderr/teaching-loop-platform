@@ -230,7 +230,7 @@ Deno.serve(async (request) => {
     if (actor.role === 'teacher') {
       const [documentsResult, chunksResult, runsResult, questionResult, tokensResult] = await Promise.all([
         db.from('knowledge_documents').select('*').order('indexed_at', { ascending: false }).limit(1000),
-        db.from('knowledge_chunks').select('document_id,version_id').limit(10000),
+        db.rpc('active_knowledge_chunk_counts', { target_document_ids: null }),
         db.from('sync_runs').select('*').order('started_at', { ascending: false }).limit(100),
         db.from('question_bank_items').select('*').eq('active', true).order('external_id').limit(2000),
         db.from('sync_tokens').select('id,label,operation,student_ids,subjects,created_at,last_used_at,expires_at')
@@ -241,11 +241,7 @@ Deno.serve(async (request) => {
       if (runsResult.error) throw runsResult.error
       if (questionResult.error) throw questionResult.error
       if (tokensResult.error) throw tokensResult.error
-      const counts = new Map<string, number>()
-      const activeVersions = new Map((documentsResult.data ?? []).map((doc) => [doc.id, doc.active_version_id]))
-      for (const chunk of chunksResult.data ?? []) {
-        if (activeVersions.get(chunk.document_id) === chunk.version_id) counts.set(chunk.document_id, (counts.get(chunk.document_id) ?? 0) + 1)
-      }
+      const counts = new Map((chunksResult.data ?? []).map((row) => [String(row.document_id), Number(row.chunk_count)]))
       knowledgeDocuments = (documentsResult.data ?? []).map((doc) => ({
         id: doc.id,
         studentId: doc.student_id ?? undefined,
@@ -299,13 +295,12 @@ Deno.serve(async (request) => {
         : { data: [], error: null }
       if (grantedError) throw grantedError
       const documents = [...(directDocuments ?? []), ...(grantedDocuments ?? [])]
-      const versionIds = documents.map((doc) => doc.active_version_id).filter(Boolean)
-      const { data: chunks, error: chunksError } = versionIds.length
-        ? await db.from('knowledge_chunks').select('version_id').in('version_id', versionIds)
+      const documentIds = [...new Set(documents.map((doc) => doc.id))]
+      const { data: chunkCounts, error: chunksError } = documentIds.length
+        ? await db.rpc('active_knowledge_chunk_counts', { target_document_ids: documentIds })
         : { data: [], error: null }
       if (chunksError) throw chunksError
-      const counts = new Map<string, number>()
-      for (const chunk of chunks ?? []) counts.set(chunk.version_id, (counts.get(chunk.version_id) ?? 0) + 1)
+      const counts = new Map((chunkCounts ?? []).map((row) => [String(row.document_id), Number(row.chunk_count)]))
       knowledgeDocuments = documents.map((doc) => ({
         id: doc.id,
         studentId: doc.student_id ?? actor.id,
@@ -318,7 +313,7 @@ Deno.serve(async (request) => {
         contentHash: doc.content_hash,
         active: doc.active,
         indexedAt: doc.indexed_at,
-        chunkCount: counts.get(doc.active_version_id) ?? 0,
+        chunkCount: counts.get(doc.id) ?? 0,
       }))
     }
 

@@ -55,6 +55,29 @@ const navByRole = {
   parent: [{ to: '/parent', label: '学习周报', icon: BookOpenCheck, end: true }],
 } as const
 
+const routePreloaders: Record<string, () => Promise<unknown>> = {
+  '/teacher': () => import('../pages/teacher/TeacherDashboard'),
+  '/teacher/review': () => import('../pages/teacher/ReviewPage'),
+  '/teacher/students': () => import('../pages/teacher/StudentsPage'),
+  '/teacher/question-bank': () => import('../pages/teacher/StudentQuestionBankPage'),
+  '/teacher/knowledge': () => import('../pages/teacher/KnowledgePage'),
+  '/teacher/reports': () => import('../pages/teacher/ReportsPage'),
+  '/teacher/accounts': () => import('../pages/teacher/AccountsPage'),
+  '/teacher/settings': () => import('../pages/teacher/SettingsPage'),
+  '/student': () => import('../pages/student/StudentDashboard'),
+  '/student/upload': () => import('../pages/student/UploadPage'),
+  '/student/wrong-upload': () => import('../pages/student/UploadPage'),
+  '/student/resources': () => import('../pages/student/LearningResourcesPage'),
+  '/student/mistakes': () => import('../pages/student/MistakesPage'),
+  '/student/tutor': () => import('../pages/student/TutorPage'),
+  '/student/messages': () => import('../pages/student/MessagesPage'),
+  '/parent': () => import('../pages/parent/ParentReportsPage'),
+}
+
+function preloadRoute(path: string) {
+  void routePreloaders[path]?.().catch(() => undefined)
+}
+
 export function AppShell() {
   const { state, demoMode, switchDemoUser, signOut, initialSyncPending, initialDataReady, syncError, refresh } = usePlatform()
   const navigate = useNavigate()
@@ -72,6 +95,10 @@ export function AppShell() {
     if (!nav || typeof window.matchMedia !== 'function') return
     revealActiveMobileNav(nav, window.matchMedia('(max-width: 760px)').matches)
   }, [location.pathname, role])
+
+  useEffect(() => {
+    preloadRoute(role === 'teacher' ? '/teacher' : role === 'student' ? '/student' : '/parent')
+  }, [role])
 
   useEffect(() => {
     const onUpdateAvailable = (event: Event) => {
@@ -117,7 +144,7 @@ export function AppShell() {
         </div>
         <nav aria-label="主导航">
           {items.map(({ to, label, icon: Icon, ...rest }) => (
-            <NavLink key={to} to={to} end={'end' in rest ? rest.end : false} className={({ isActive }) => (isActive ? 'active' : '')}>
+            <NavLink key={to} to={to} end={'end' in rest ? rest.end : false} onPointerEnter={() => preloadRoute(to)} onFocus={() => preloadRoute(to)} className={({ isActive }) => (isActive ? 'active' : '')}>
               <Icon size={18} /><span>{label}</span>
             </NavLink>
           ))}
@@ -174,7 +201,7 @@ export function AppShell() {
 
       <nav ref={mobileNavRef} className="mobile-nav" aria-label="移动端导航">
         {items.map(({ to, label, icon: Icon, ...rest }) => (
-          <NavLink key={to} to={to} end={'end' in rest ? rest.end : false} className={({ isActive }) => (isActive ? 'active' : '')}>
+          <NavLink key={to} to={to} end={'end' in rest ? rest.end : false} onPointerEnter={() => preloadRoute(to)} onFocus={() => preloadRoute(to)} onTouchStart={() => preloadRoute(to)} className={({ isActive }) => (isActive ? 'active' : '')}>
             <Icon size={20} /><span>{label}</span>
           </NavLink>
         ))}
