@@ -942,9 +942,11 @@ p {
 .chat-turn.student .chat-avatar { background: var(--blue-soft); color: #1d4ed8; }
 .chat-bubble { max-width: min(700px, calc(100% - 48px)); padding: 12px 14px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); }
 .chat-turn.student .chat-bubble { background: #eff6ff; border-color: #bfdbfe; }
+.chat-turn.pending .chat-bubble { opacity: 0.82; }
 .chat-meta { margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .chat-meta strong { font-size: 11px; }
 .chat-meta span { color: var(--ink-faint); font-size: 9px; }
+.pending-image-note { margin: 8px 0 0; display: flex; align-items: center; gap: 5px; color: var(--ink-faint); font-size: 11px; }
 .general-knowledge-note { margin: 10px 0 0; padding: 8px; border-radius: 5px; background: var(--amber-soft); color: #92400e; font-size: 10px; line-height: 1.5; }
 .chat-thinking { margin: 8px 42px; display: flex; align-items: center; gap: 7px; color: var(--ink-faint); font-size: 11px; }
 .chat-composer { padding: 10px 14px 12px; border-top: 1px solid var(--border); background: #fbfbf8; }
@@ -953,6 +955,7 @@ p {
 .hint-levels { display: flex; gap: 5px; overflow-x: auto; padding-bottom: 8px; }
 .hint-levels button { min-height: 29px; padding: 0 10px; flex: 0 0 auto; border: 1px solid var(--border); border-radius: 5px; background: var(--surface); color: var(--ink-faint); font-size: 10px; font-weight: 700; cursor: pointer; }
 .hint-levels button.active { border-color: var(--teal); background: var(--teal-soft); color: var(--teal-dark); }
+.hint-levels button:disabled { cursor: wait; opacity: 0.65; }
 .attempt-input { width: 100%; min-height: 52px; margin-bottom: 7px; padding: 8px 10px; border: 1px solid #fcd34d; border-radius: 6px; background: #fffbeb; outline: none; resize: vertical; font-size: 11px; }
 .composer-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end; }
 .composer-row textarea { width: 100%; height: 68px; padding: 10px 11px; border: 1px solid var(--border-strong); border-radius: 6px; outline: none; resize: none; font-size: 12px; line-height: 1.5; }
@@ -1770,6 +1773,15 @@ html[data-ui-theme="data"] .login-panel select { min-height: 44px; font-size: 16
 html[data-ui-theme="data"] .account-load-error,
 html[data-ui-theme="data"] .account-load-error button { font-size: 14px; }
 html[data-ui-theme="data"] .hint-levels button { min-height: 38px; padding-inline: 14px; font-size: 15px; }
+html[data-ui-theme="data"] .tutor-context-bar { min-height: 50px; font-size: 14px; }
+html[data-ui-theme="data"] .chat-empty h2 { font-size: 20px; }
+html[data-ui-theme="data"] .chat-meta strong { font-size: 14px; }
+html[data-ui-theme="data"] .chat-meta span,
+html[data-ui-theme="data"] .chat-thinking,
+html[data-ui-theme="data"] .pending-image-note,
+html[data-ui-theme="data"] .chat-composer > small { font-size: 13px; }
+html[data-ui-theme="data"] .general-knowledge-note { font-size: 14px; }
+html[data-ui-theme="data"] .citation span { font-size: 15px; }
 html[data-ui-theme="data"] .tutor-image-preview strong { font-size: 15px; }
 html[data-ui-theme="data"] .tutor-composer-actions .icon-button { width: 44px; height: 44px; }
 

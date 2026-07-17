@@ -1,7 +1,11 @@
 import { handleOptions } from '../_shared/cors.ts'
 import { requireTeacher } from '../_shared/auth.ts'
 import { asErrorResponse, HttpError, json, readJson, requireString } from '../_shared/http.ts'
-import { chatCompletion, parseJsonObject } from '../_shared/model.ts'
+import { chatCompletion, type ModelResult } from '../_shared/model.ts'
+import { buildWeeklyReportModelMessages, parseWeeklyReportModelOutput } from './logic.ts'
+
+const WEEKLY_REPORT_MODEL_TIMEOUT_MS = 20_000
+const WEEKLY_REPORT_MAX_OUTPUT_TOKENS = 1400
 
 function list(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0).slice(0, 20).map((item) => item.trim().slice(0, 500)) : []
@@ -67,17 +71,34 @@ Deno.serve(async (request) => {
       const periodStart = typeof body.periodStart === 'string' ? body.periodStart.slice(0, 10) : shanghaiDateKey(defaultStart)
       const periodEnd = typeof body.periodEnd === 'string' ? body.periodEnd.slice(0, 10) : shanghaiDateKey(defaultEnd)
       const timestampRange = shanghaiTimestampRange(periodStart, periodEnd)
-      const [{ data: evidence }, { data: wrongItems }, { data: tasks }, { data: submissions }, { data: dailyEvaluations }, { data: settings }] = await Promise.all([
-        db.from('learning_evidence').select('*').eq('student_id', studentId).eq('state', 'teacher_verified').gte('created_at', timestampRange.start).lt('created_at', timestampRange.endExclusive),
-        db.from('wrong_items').select('*').eq('student_id', studentId).eq('evidence_state', 'teacher_verified').gte('occurred_at', periodStart).lte('occurred_at', periodEnd),
-        db.from('review_tasks').select('*').eq('student_id', studentId).gte('created_at', timestampRange.start).lt('created_at', timestampRange.endExclusive),
-        db.from('submissions').select('id,minutes_spent,self_reflection,confidence,status').eq('student_id', studentId)
-          .gte('assignment_date', periodStart).lte('assignment_date', periodEnd),
+      const [
+        { data: evidence },
+        { data: wrongItems },
+        { data: tasks },
+        { data: submissions },
+        { data: dailyEvaluations },
+        { data: settings },
+        { data: studentProfile, error: studentError },
+      ] = await Promise.all([
+        db.from('learning_evidence').select('category,claim,evidence,created_at').eq('student_id', studentId).eq('state', 'teacher_verified')
+          .gte('created_at', timestampRange.start).lt('created_at', timestampRange.endExclusive)
+          .order('created_at', { ascending: true }).limit(60),
+        db.from('wrong_items').select('title,knowledge_points,error_tags,teacher_note,resolved,occurred_at').eq('student_id', studentId)
+          .eq('evidence_state', 'teacher_verified').gte('occurred_at', periodStart).lte('occurred_at', periodEnd)
+          .order('occurred_at', { ascending: true }).limit(60),
+        db.from('review_tasks').select('status').eq('student_id', studentId)
+          .gte('created_at', timestampRange.start).lt('created_at', timestampRange.endExclusive).limit(500),
+        db.from('submissions').select('id,minutes_spent,self_reflection').eq('student_id', studentId)
+          .gte('assignment_date', periodStart).lte('assignment_date', periodEnd).limit(200),
         db.from('teacher_daily_evaluations').select('evaluation_date,subject,summary,highlights,improvements')
           .eq('student_id', studentId).gte('evaluation_date', periodStart).lte('evaluation_date', periodEnd)
-          .order('evaluation_date', { ascending: true }),
-        db.from('app_settings').select('*').eq('singleton', true).single(),
+          .order('evaluation_date', { ascending: true }).limit(60),
+        db.from('app_settings').select('ai_enabled,text_model,text_provider').eq('singleton', true).single(),
+        db.from('student_profiles').select('id,guardian_consent_at').eq('id', studentId).maybeSingle(),
       ])
+      if (studentError || !studentProfile) {
+        throw studentError ?? new HttpError(404, '学生资料不存在', 'not_found')
+      }
       const submissionCount = submissions?.length ?? 0
       const timed = (submissions ?? []).filter((item) => typeof item.minutes_spent === 'number')
       const measurableBehavior = {
@@ -86,26 +107,39 @@ Deno.serve(async (request) => {
         reflectionCompletionRate: submissionCount ? (submissions ?? []).filter((item) => item.self_reflection?.trim()).length / submissionCount : null,
         reviewCompletionRate: (tasks ?? []).length ? (tasks ?? []).filter((item) => item.status === 'completed').length / (tasks ?? []).length : null,
       }
-      const facts = {
-        confirmedEvidence: (evidence ?? []).map((item) => ({ category: item.category, claim: item.claim, evidence: item.evidence })),
-        teacherDailyEvaluations: (dailyEvaluations ?? []).map((item) => ({
-          date: item.evaluation_date,
-          subject: item.subject,
-          summary: item.summary,
-          highlights: item.highlights,
-          improvements: item.improvements,
-        })),
-        confirmedWrongItems: (wrongItems ?? []).map((item) => ({ title: item.title, knowledgePoints: item.knowledge_points, errorTags: item.error_tags, teacherNote: item.teacher_note })),
-        review: { completed: (tasks ?? []).filter((item) => item.status === 'completed').length, total: (tasks ?? []).length },
+      const modelMessages = buildWeeklyReportModelMessages({
+        evidence,
+        dailyEvaluations,
+        wrongItems,
+        reviewCompleted: (tasks ?? []).filter((item) => item.status === 'completed').length,
+        reviewTotal: (tasks ?? []).length,
         measurableBehavior,
-      }
-      let parsed: Record<string, unknown> | null = null
-      if (settings.ai_enabled) {
-        const result = await chatCompletion([
-          { role: 'system', content: '你是教师周报草稿助手。只能使用给定的教师确认事实，不推断性格，不暴露原始聊天或私密备注。输出 JSON：summary,progress,concerns,nextActions。' },
-          { role: 'user', content: JSON.stringify(facts) },
-        ], { model: settings.text_model, json: true, temperature: 0.1 })
-        if (result) parsed = parseJsonObject(result.text)
+      })
+      let parsed = null as ReturnType<typeof parseWeeklyReportModelOutput>
+      let modelResult: ModelResult | null = null
+      const modelAllowed = Boolean(settings.ai_enabled && studentProfile.guardian_consent_at)
+      if (modelAllowed) {
+        modelResult = await chatCompletion([
+          { role: 'system', content: modelMessages.system },
+          { role: 'user', content: modelMessages.user },
+        ], {
+          model: settings.text_model,
+          json: true,
+          temperature: 0.1,
+          maxOutputTokens: WEEKLY_REPORT_MAX_OUTPUT_TOKENS,
+          timeoutMs: WEEKLY_REPORT_MODEL_TIMEOUT_MS,
+        })
+        if (modelResult) parsed = parseWeeklyReportModelOutput(modelResult.text)
+        const { error: usageError } = await db.from('model_usage').insert({
+          student_id: studentId,
+          operation: 'weekly_report',
+          provider: settings.text_provider,
+          model: modelResult?.model,
+          input_tokens: modelResult?.inputTokens ?? 0,
+          output_tokens: modelResult?.outputTokens ?? 0,
+          fallback_used: !parsed,
+        })
+        if (usageError) console.error('Failed to record weekly report model usage', usageError.message)
       }
       const progress = parsed ? list(parsed.progress) : [
         `本周提交作业 ${submissionCount} 次`,
@@ -118,7 +152,11 @@ Deno.serve(async (request) => {
           summary: typeof parsed?.summary === 'string' ? parsed.summary.slice(0, 8000) : '以下内容根据教师已确认的学习记录生成，请教师复核后发布。',
           progress, concerns, nextActions, status: 'draft',
       }
-      return json(request, action === 'draft' ? report : { report, fallbackUsed: !parsed })
+      return json(request, action === 'draft' ? report : {
+        report,
+        fallbackUsed: !parsed,
+        aiSkippedForConsent: Boolean(settings.ai_enabled && !studentProfile.guardian_consent_at),
+      })
     }
     throw new HttpError(400, '不支持的周报操作', 'invalid_action')
   } catch (error) {

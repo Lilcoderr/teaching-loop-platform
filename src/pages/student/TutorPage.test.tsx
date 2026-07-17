@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
     embeddingModelConfigured: false,
   },
   guardianConsentAt: '2026-07-01T12:00:00.000Z',
+  subjects: ['math'] as Array<'math' | 'physics' | 'chemistry'>,
   tutorTurns: [] as unknown[],
 }))
 
@@ -20,7 +21,7 @@ vi.mock('../../context/PlatformContext', () => ({
   usePlatform: () => ({
     state: {
       currentUser: { id: 'student-1', role: 'student', displayName: '林同学', username: 'lin-demo', avatarColor: '#000' },
-      students: [{ id: 'student-1', role: 'student', displayName: '林同学', username: 'lin-demo', avatarColor: '#000', grade: '高三', subjects: ['math'], guardianConsentAt: mocks.guardianConsentAt }],
+      students: [{ id: 'student-1', role: 'student', displayName: '林同学', username: 'lin-demo', avatarColor: '#000', grade: '高三', subjects: mocks.subjects, guardianConsentAt: mocks.guardianConsentAt }],
       tutorTurns: mocks.tutorTurns,
       knowledgeDocuments: [],
       learningResources: [],
@@ -40,6 +41,7 @@ describe('TutorPage multimodal composer', () => {
     mocks.settings.visionModelConfigured = false
     mocks.settings.embeddingModelConfigured = false
     mocks.guardianConsentAt = '2026-07-01T12:00:00.000Z'
+    mocks.subjects = ['math']
     mocks.tutorTurns = []
     Element.prototype.scrollIntoView = vi.fn()
     URL.createObjectURL = vi.fn(() => 'blob:question-preview')
@@ -131,6 +133,56 @@ describe('TutorPage multimodal composer', () => {
     expect(await screen.findByText('AI 暂时没有返回回答，你的输入仍保留在页面中，请直接重试。')).toBeInTheDocument()
     expect(questionInput).toHaveValue('求椭圆在给定点处的切线方程')
     expect(attemptInput).toHaveValue('设切点为 P(x0,y0)，并代入椭圆方程')
+  })
+
+  it('locks the composer and shows the pending question while one model request is running', async () => {
+    mocks.demoMode = false
+    mocks.settings.textModelConfigured = true
+    let finishRequest: (() => void) | undefined
+    mocks.sendTutorMessage.mockImplementationOnce(() => new Promise<void>((resolve) => { finishRequest = resolve }))
+    const user = userEvent.setup()
+    render(<TutorPage />)
+
+    const questionInput = screen.getByRole('textbox', { name: '题目和卡点' })
+    await user.type(questionInput, '数列递推式应该怎样转成通项？')
+    await user.click(screen.getByRole('button', { name: '发送' }))
+
+    expect(await screen.findByRole('article', { name: '正在发送的问题' })).toHaveTextContent('数列递推式应该怎样转成通项？')
+    expect(screen.getByRole('status')).toHaveTextContent('正在检索资料并组织回答')
+    expect(questionInput).toBeDisabled()
+    expect(screen.getByRole('combobox', { name: '当前科目' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '诊断卡点' })).toBeDisabled()
+
+    const form = questionInput.closest('form')
+    expect(form).not.toBeNull()
+    fireEvent.submit(form!)
+    fireEvent.submit(form!)
+    expect(mocks.sendTutorMessage).toHaveBeenCalledTimes(1)
+
+    finishRequest?.()
+    await waitFor(() => expect(questionInput).toBeEnabled())
+    expect(questionInput).toHaveValue('')
+  })
+
+  it('does not submit when Enter is used to confirm a Chinese IME candidate', async () => {
+    const user = userEvent.setup()
+    render(<TutorPage />)
+    const questionInput = screen.getByRole('textbox', { name: '题目和卡点' })
+    await user.type(questionInput, '这道题怎么做')
+
+    fireEvent.keyDown(questionInput, { key: 'Enter', code: 'Enter', isComposing: true })
+    expect(mocks.sendTutorMessage).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(questionInput, { key: 'Enter', code: 'Enter', isComposing: false })
+    await waitFor(() => expect(mocks.sendTutorMessage).toHaveBeenCalledTimes(1))
+  })
+
+  it('falls back to mathematics for a legacy profile with no configured subjects', () => {
+    mocks.subjects = []
+    render(<TutorPage />)
+
+    expect(screen.getByRole('combobox', { name: '当前科目' })).toHaveValue('math')
+    expect(screen.getByRole('option', { name: '数学' })).toBeInTheDocument()
   })
 
   it('disables new questions when the text model is not connected in production', async () => {

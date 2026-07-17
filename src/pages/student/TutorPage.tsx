@@ -16,8 +16,16 @@ const levelLabels: Array<{ value: HintLevel; label: string }> = [
 ]
 
 const acceptedImageTypes = new Set<TutorImageInput['mimeType']>(['image/jpeg', 'image/png', 'image/webp'])
+const defaultSubjects: Subject[] = ['math']
 const maxOriginalImageBytes = 15 * 1024 * 1024
 const directImageBytes = 2_500_000
+
+interface PendingQuestion {
+  requestBody: string
+  displayBody: string
+  createdAt: string
+  hasImage: boolean
+}
 
 function isTutorImageType(value: string): value is TutorImageInput['mimeType'] {
   return acceptedImageTypes.has(value as TutorImageInput['mimeType'])
@@ -105,7 +113,7 @@ export function TutorPage() {
   const { state, sendTutorMessage, demoMode } = usePlatform()
   const studentId = state.currentUser.id
   const studentProfile = state.students.find((student) => student.id === studentId)
-  const availableSubjects = studentProfile?.subjects ?? ['math']
+  const availableSubjects = studentProfile?.subjects.length ? studentProfile.subjects : defaultSubjects
   const [message, setMessage] = useState('')
   const [attempt, setAttempt] = useState('')
   const [subject, setSubject] = useState<Subject>(availableSubjects[0] ?? 'math')
@@ -115,10 +123,17 @@ export function TutorPage() {
   const [busy, setBusy] = useState(false)
   const [busyLabel, setBusyLabel] = useState('正在检索资料并组织回答')
   const [error, setError] = useState('')
+  const [pendingQuestion, setPendingQuestion] = useState<PendingQuestion | null>(null)
   const [selectedCitation, setSelectedCitation] = useState<Citation | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const imageInputRef = useRef<HTMLInputElement>(null)
+  const submittingRef = useRef(false)
   const turns = state.tutorTurns.filter((turn) => turn.studentId === studentId)
+  const pendingVisible = pendingQuestion && !turns.some((turn) => (
+    turn.role === 'student' &&
+    turn.body === pendingQuestion.requestBody &&
+    new Date(turn.createdAt).getTime() >= new Date(pendingQuestion.createdAt).getTime() - 1_000
+  ))
   const consentReady = demoMode || Boolean(studentProfile?.guardianConsentAt)
   const textModelReady = demoMode || Boolean(consentReady && state.settings.aiEnabled && state.settings.textModelConfigured)
   const visionModelReady = demoMode || Boolean(textModelReady && state.settings.visionModelConfigured)
@@ -135,8 +150,13 @@ export function TutorPage() {
             : { label: '文字与图片已连接', tone: 'connected' }
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [turns.length])
+    const reduceMotion = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    bottomRef.current?.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth' })
+  }, [turns.length, busy])
+
+  useEffect(() => {
+    if (!availableSubjects.includes(subject)) setSubject(availableSubjects[0] ?? 'math')
+  }, [availableSubjects, subject])
 
   useEffect(() => () => {
     if (imagePreview) URL.revokeObjectURL(imagePreview)
@@ -166,7 +186,7 @@ export function TutorPage() {
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
-    if ((!message.trim() && !image) || busy) return
+    if ((!message.trim() && !image) || busy || submittingRef.current) return
     if (!consentReady) {
       setError('尚未完成监护人知情记录，请联系老师。')
       return
@@ -183,10 +203,18 @@ export function TutorPage() {
       setError('查看完整解答前，请写下至少 8 个字符且包含公式、设元或计算步骤。')
       return
     }
+    const current = message
+    const startedAt = new Date().toISOString()
+    submittingRef.current = true
+    setPendingQuestion({
+      requestBody: current.trim() || '请分析这张题目图片',
+      displayBody: current.trim() || '已上传题目图片，请帮我分析。',
+      createdAt: startedAt,
+      hasImage: Boolean(image),
+    })
     setBusy(true)
     setBusyLabel(image ? '正在处理题目图片' : '正在检索资料并组织回答')
     setError('')
-    const current = message
     try {
       const imagePayload = image ? await prepareTutorImage(image) : undefined
       setBusyLabel('正在检索资料并组织回答')
@@ -197,6 +225,8 @@ export function TutorPage() {
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : '答疑请求失败，请稍后重试。')
     } finally {
+      submittingRef.current = false
+      setPendingQuestion(null)
       setBusy(false)
     }
   }
@@ -210,8 +240,8 @@ export function TutorPage() {
           <span className={`tutor-model-status ${modelStatus.tone}`}><Bot size={15} />{modelStatus.label}</span>
           <span className="privacy-note">仅检索你的资料</span>
         </div>
-        <div className="chat-stream">
-          {!turns.length && (
+        <div className="chat-stream" role="log" aria-live="polite" aria-busy={busy}>
+          {!turns.length && !pendingVisible && (
             <div className="chat-empty">
               <span><Sparkles size={25} /></span>
               <h2>从一个具体卡点开始</h2>
@@ -229,36 +259,46 @@ export function TutorPage() {
               </div>
             </article>
           ))}
-          {busy && <div className="chat-thinking"><LoaderCircle className="spin" size={17} />{busyLabel}</div>}
+          {pendingVisible && (
+            <article className="chat-turn student pending" aria-label="正在发送的问题">
+              <span className="chat-avatar"><UserRound size={18} /></span>
+              <div className="chat-bubble">
+                <div className="chat-meta"><strong>{state.currentUser.displayName}</strong><span>发送中</span></div>
+                <MarkdownContent>{pendingQuestion.displayBody}</MarkdownContent>
+                {pendingQuestion.hasImage && <p className="pending-image-note"><ImagePlus size={14} />附带 1 张题目图片</p>}
+              </div>
+            </article>
+          )}
+          {busy && <div className="chat-thinking" role="status"><LoaderCircle className="spin" size={17} />{busyLabel}</div>}
           <div ref={bottomRef} />
         </div>
-        <form className="chat-composer" onSubmit={submit}>
-          <label className="tutor-subject"><span>当前科目</span><select value={subject} onChange={(event) => setSubject(event.target.value as Subject)}>{availableSubjects.map((item) => <option key={item} value={item}>{subjectLabels[item]}</option>)}</select></label>
-          <div className="hint-levels">
-            {levelLabels.map((option) => <button type="button" className={level === option.value ? 'active' : ''} onClick={() => setLevel(option.value)} key={option.value}>{option.label}</button>)}
+        <form className="chat-composer" onSubmit={submit} aria-busy={busy}>
+          <label className="tutor-subject"><span>当前科目</span><select value={subject} onChange={(event) => setSubject(event.target.value as Subject)} disabled={busy}>{availableSubjects.map((item) => <option key={item} value={item}>{subjectLabels[item]}</option>)}</select></label>
+          <div className="hint-levels" role="group" aria-label="回答深度">
+            {levelLabels.map((option) => <button type="button" className={level === option.value ? 'active' : ''} onClick={() => setLevel(option.value)} aria-pressed={level === option.value} disabled={busy} key={option.value}>{option.label}</button>)}
           </div>
           {level === 'solution' && (
-            <textarea className="attempt-input" value={attempt} onChange={(event) => setAttempt(event.target.value)} placeholder="先写下你已经尝试的公式、设元或步骤……" />
+            <textarea className="attempt-input" value={attempt} onChange={(event) => setAttempt(event.target.value)} placeholder="先写下你已经尝试的公式、设元或步骤……" aria-label="我的解题尝试" disabled={busy} />
           )}
           {image && imagePreview && (
             <div className="tutor-image-preview">
               <img src={imagePreview} alt="待发送的题目" />
               <div><strong>{image.name}</strong><small>{(image.size / 1024 / 1024).toFixed(1)} MB · 仅本次答疑使用</small></div>
-              <button type="button" className="icon-button" onClick={clearImage} title="移除图片" aria-label="移除图片"><X size={17} /></button>
+              <button type="button" className="icon-button" onClick={clearImage} title="移除图片" aria-label="移除图片" disabled={busy}><X size={17} /></button>
             </div>
           )}
           <div className="composer-row">
-            <textarea value={message} onChange={(event) => setMessage(event.target.value)} placeholder="描述题目和你卡住的位置" onKeyDown={(event) => {
-              if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit() }
+            <textarea value={message} onChange={(event) => setMessage(event.target.value)} placeholder="描述题目和你卡住的位置" aria-label="题目和卡点" aria-describedby="tutor-composer-help" disabled={busy} onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit() }
             }} />
             <div className="tutor-composer-actions">
               <button type="button" className="icon-button tutor-image-button" onClick={() => imageInputRef.current?.click()} disabled={busy || !visionModelReady} title={!visionModelReady ? '图片答疑未配置' : image ? '更换图片' : '上传题目图片'} aria-label={!visionModelReady ? '图片答疑未配置' : image ? '更换图片' : '上传题目图片'}><ImagePlus size={18} /></button>
-              <button type="submit" className="icon-button send-button" disabled={!textModelReady || (!message.trim() && !image) || busy || (level === 'solution' && !hasMeaningfulAttempt(attempt))} title={!consentReady ? '等待监护人知情记录' : !textModelReady ? 'AI 答疑未连接' : '发送'}><Send size={18} /></button>
-              <input ref={imageInputRef} type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" onChange={chooseImage} disabled={!visionModelReady} hidden />
+              <button type="submit" className="icon-button send-button" disabled={!textModelReady || (!message.trim() && !image) || busy || (level === 'solution' && !hasMeaningfulAttempt(attempt))} title={!consentReady ? '等待监护人知情记录' : !textModelReady ? 'AI 答疑未连接' : busy ? '正在回答' : '发送'} aria-label={!consentReady ? '等待监护人知情记录' : !textModelReady ? 'AI 答疑未连接' : busy ? '正在回答' : '发送'}><Send size={18} /></button>
+              <input ref={imageInputRef} type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" onChange={chooseImage} disabled={busy || !visionModelReady} hidden />
             </div>
           </div>
-          {error && <p className="form-error">{error}</p>}
-          <small><CornerDownLeft size={12} /> Enter 发送，Shift + Enter 换行 · 每次 1 张，手机大图自动压缩</small>
+          {error && <p className="form-error" role="alert">{error}</p>}
+          <small id="tutor-composer-help"><CornerDownLeft size={12} /> Enter 发送，Shift + Enter 换行 · 每次 1 张，手机大图自动压缩</small>
         </form>
       </section>
       <Modal open={Boolean(selectedCitation)} title="引用来源" onClose={() => setSelectedCitation(null)}>

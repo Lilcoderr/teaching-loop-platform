@@ -2,6 +2,7 @@ import { handleOptions } from '../_shared/cors.ts'
 import { requireSyncToken } from '../_shared/auth.ts'
 import { asErrorResponse, HttpError, json, readJson, requireString } from '../_shared/http.ts'
 import { embeddingModelConfigured, embedTexts } from '../_shared/model.ts'
+import { externalEmbeddingAllowed } from './logic.ts'
 
 const SUBJECTS = new Set(['math', 'physics', 'chemistry'])
 const TYPES = new Set(['lecture', 'exercise', 'solution', 'lesson_plan'])
@@ -11,9 +12,10 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 async function backfillMissingEmbeddings(
   db: ReturnType<typeof import('../_shared/auth.ts')['serviceClient']>,
   versionId: string,
+  externalModelAllowed: boolean,
   requestedModel?: string,
 ): Promise<void> {
-  if (!embeddingModelConfigured(requestedModel)) return
+  if (!externalModelAllowed) return
   const { data: chunks, error } = await db.from('knowledge_chunks')
     .select('id,content')
     .eq('version_id', versionId)
@@ -33,15 +35,23 @@ async function backfillMissingEmbeddings(
   }
 }
 
-async function resolveStudent(db: ReturnType<typeof import('../_shared/auth.ts')['serviceClient']>, value: unknown): Promise<string> {
+type StudentTarget = { id: string; guardianConsentAt: string | null }
+
+async function resolveStudent(db: ReturnType<typeof import('../_shared/auth.ts')['serviceClient']>, value: unknown): Promise<StudentTarget> {
   const candidate = requireString(value, 'studentId', 80)
   if (UUID.test(candidate)) {
-    const { data } = await db.from('student_profiles').select('id').eq('id', candidate).maybeSingle()
-    if (data) return data.id
+    const { data, error } = await db.from('student_profiles').select('id,guardian_consent_at').eq('id', candidate).maybeSingle()
+    if (error) throw error
+    if (data) return { id: data.id, guardianConsentAt: data.guardian_consent_at }
   }
-  const { data } = await db.from('profiles').select('id,role').eq('username', candidate).maybeSingle()
+  const { data, error } = await db.from('profiles').select('id,role').eq('username', candidate).maybeSingle()
+  if (error) throw error
   if (!data || data.role !== 'student') throw new HttpError(400, `找不到学生：${candidate}`, 'student_not_found')
-  return data.id
+  const { data: student, error: studentError } = await db.from('student_profiles')
+    .select('id,guardian_consent_at').eq('id', data.id).maybeSingle()
+  if (studentError) throw studentError
+  if (!student) throw new HttpError(400, `找不到学生：${candidate}`, 'student_not_found')
+  return { id: student.id, guardianConsentAt: student.guardian_consent_at }
 }
 
 function validDocument(raw: unknown): Record<string, unknown> {
@@ -94,10 +104,16 @@ Deno.serve(async (request) => {
         try {
           const doc = validDocument(raw)
           externalId = requireString(doc.externalId, 'externalId', 200)
-          const studentId = await resolveStudent(db, doc.studentId ?? doc.studentUsername)
+          const student = await resolveStudent(db, doc.studentId ?? doc.studentUsername)
+          const studentId = student.id
           if (!allowedStudentIds.includes(studentId) || !allowedSubjects.includes(String(doc.subject))) {
             throw new HttpError(403, '同步令牌无权写入该学生或科目', 'sync_scope_forbidden')
           }
+          const embeddingAllowed = externalEmbeddingAllowed(
+            settings?.ai_enabled,
+            student.guardianConsentAt,
+            embeddingModelConfigured(settings?.embedding_model),
+          )
           const contentHash = requireString(doc.contentHash, 'contentHash', 128)
           const { data: existing, error: existingError } = await db.from('knowledge_documents').select('*').eq('external_id', externalId).maybeSingle()
           if (existingError) throw existingError
@@ -105,7 +121,7 @@ Deno.serve(async (request) => {
             throw new HttpError(403, '同步令牌无权修改已有文档', 'sync_scope_forbidden')
           }
           if (existing && existing.content_hash === contentHash && existing.active_version_id) {
-            await backfillMissingEmbeddings(db, existing.active_version_id, settings?.embedding_model)
+            await backfillMissingEmbeddings(db, existing.active_version_id, embeddingAllowed, settings?.embedding_model)
             const { error } = await db.from('knowledge_documents').update({
               student_id: studentId,
               subject: doc.subject,
@@ -156,7 +172,7 @@ Deno.serve(async (request) => {
 
           const rawChunks = doc.chunks as Array<Record<string, unknown>>
           const embeddings: Array<number[] | null> = Array(rawChunks.length).fill(null)
-          if (embeddingModelConfigured(settings?.embedding_model)) {
+          if (embeddingAllowed) {
             for (let start = 0; start < rawChunks.length; start += 32) {
               const batch = rawChunks.slice(start, start + 32).map((chunk) => requireString(chunk.content, 'chunk.content', 30000))
               const vectors = await embedTexts(batch, settings.embedding_model)

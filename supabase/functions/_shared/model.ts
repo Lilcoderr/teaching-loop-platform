@@ -79,7 +79,10 @@ export async function chatCompletion(
       signal: AbortSignal.timeout(Math.min(Math.max(options.timeoutMs ?? 45_000, 1_000), 45_000)),
     })
     if (!response.ok) {
-      console.error('AI request failed', response.status, (await response.text()).slice(0, 500))
+      console.error('AI request failed', {
+        status: response.status,
+        requestId: response.headers.get('x-request-id') ?? response.headers.get('request-id') ?? undefined,
+      })
       return null
     }
     const data = await response.json()
@@ -115,7 +118,10 @@ export async function embedTexts(
       signal: AbortSignal.timeout(Math.min(Math.max(options.timeoutMs ?? 45_000, 1_000), 45_000)),
     })
     if (!response.ok) {
-      console.error('Embedding request failed', response.status, (await response.text()).slice(0, 500))
+      console.error('Embedding request failed', {
+        status: response.status,
+        requestId: response.headers.get('x-request-id') ?? response.headers.get('request-id') ?? undefined,
+      })
       return null
     }
     const data = await response.json()
