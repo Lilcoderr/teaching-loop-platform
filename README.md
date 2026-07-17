@@ -92,6 +92,7 @@ npm run question-bank:import -- --config question-bank-import.local.json
 ## 文档
 
 - [GitHub Pages + Supabase 免费部署](docs/free-deployment.md)
+- [EdgeOne 国内访问镜像](docs/edgeone-mirror.md)
 - [可选：国内自托管部署与 Secrets](docs/deployment.md)
 - [国内访问验收表](docs/china-access-checklist.md)
 - [未成年人数据与隐私操作清单](docs/privacy-minors-checklist.md)
