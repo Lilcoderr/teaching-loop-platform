@@ -1,8 +1,6 @@
 name: Deploy EdgeOne Makers mirror
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:

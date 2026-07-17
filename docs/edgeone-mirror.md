@@ -4,7 +4,7 @@
 
 ## 自动部署
 
-`.github/workflows/edgeone-makers.yml` 在 `main` 推送或手动触发时执行：
+腾讯云 EdgeOne Makers 已原生关联 GitHub 仓库，因此每次推送 `main` 都由 Makers 自动构建并发布。仓库内的 `.github/workflows/edgeone-makers.yml` 保留为手动触发的备用发布通道：
 
 1. 安装依赖、运行 lint 和测试。
 2. 使用 `VITE_BASE_PATH=/` 构建根路径产物（GitHub Pages 的仓库子路径构建不复用）。
